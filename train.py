@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import time
+import gc
 
 import torch.distributed as dist
 import torch.utils.data.distributed
@@ -60,6 +61,8 @@ parser.add_argument('--no-shuffle', dest='no_shuffle', action='store_true',
                     help='Turn off shuffling and sample from dataset based on sequence length (smallest to largest)')
 parser.add_argument('--no-sortaGrad', dest='no_sorta_grad', action='store_true',
                     help='Turn off ordering of dataset on sequence length for the first epoch.')
+parser.add_argument('--reverse-sort', dest='reverse_sort', action='store_true',
+                    help='Turn off reverse ordering of dataset on sequence length for the first epoch.')
 parser.add_argument('--no-bidirectional', dest='bidirectional', action='store_false', default=True,
                     help='Turn off bi-directional RNNs, introduces lookahead convolution')
 parser.add_argument('--dist-url', default='tcp://127.0.0.1:1550', type=str,
@@ -203,6 +206,10 @@ if __name__ == '__main__':
                                        normalize=True, augment=args.augment)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
                                       normalize=True, augment=False)
+    if args.reverse_sort:
+        #XXX: A hack to test max memory load.
+        train_dataset.ids.reverse()
+
     if not args.distributed:
         train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
     else:
@@ -234,7 +241,7 @@ if __name__ == '__main__':
         end = time.time()
         start_epoch_time = time.time()
         for i, (data) in enumerate(train_loader, start=start_iter):
-            if i == len(train_sampler):
+            if i >= len(train_sampler):
                 break
             inputs, targets, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -285,8 +292,11 @@ if __name__ == '__main__':
                                                 loss_results=loss_results,
                                                 wer_results=wer_results, cer_results=cer_results, avg_loss=avg_loss),
                            file_path)
-            del loss
-            del out
+            del inputs, targets, input_percentages, target_sizes
+            del out, sizes, loss_sum
+            #gc.collect()
+            #torch.cuda.empty_cache()
+
         avg_loss /= len(train_sampler)
 
         epoch_time = time.time() - start_epoch_time
@@ -322,7 +332,12 @@ if __name__ == '__main__':
                     cer += decoder.cer(transcript, reference) / float(len(reference))
                 total_cer += cer
                 total_wer += wer
-                del out
+                del inputs, targets, input_percentages, target_sizes
+                del out, sizes
+
+                if args.cuda:
+                    torch.cuda.synchronize()
+
             wer = total_wer / len(test_loader.dataset)
             cer = total_cer / len(test_loader.dataset)
             wer *= 100

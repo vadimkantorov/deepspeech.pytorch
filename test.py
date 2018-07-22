@@ -2,6 +2,7 @@ import argparse
 
 import numpy as np
 import torch
+import gc
 from tqdm import tqdm
 
 from data.data_loader import SpectrogramDataset, AudioDataLoader
@@ -45,6 +46,8 @@ if __name__ == '__main__':
     target_decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.test_manifest, labels=labels,
                                       normalize=True)
+    #import random;random.shuffle(test_dataset.ids)
+
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
                                   num_workers=args.num_workers)
     total_cer, total_wer, num_tokens, num_chars = 0, 0, 0, 0
@@ -62,6 +65,8 @@ if __name__ == '__main__':
 
         inputs = inputs.to(device)
         out, output_sizes = model(inputs, input_sizes)
+
+        del inputs, targets, input_percentages, target_sizes
 
         if decoder is None:
             # add output to data array, and continue
@@ -82,6 +87,10 @@ if __name__ == '__main__':
                 print("Ref:", reference.lower())
                 print("Hyp:", transcript.lower())
                 print("WER:", float(wer_inst) / len(reference.split()), "CER:", float(cer_inst) / len(reference), "\n")
+
+        del out, sizes
+        gc.collect()
+        torch.cuda.empty_cache()
 
     if decoder is not None:
         wer = float(total_wer) / num_tokens

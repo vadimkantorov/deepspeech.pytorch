@@ -77,17 +77,18 @@ def main():
             shutil.rmtree(extracted_dir)
         for url in lst_libri_urls:
             # check if we want to dl this file
-            dl_flag = False
-            for f in files_to_dl:
-                if url.find(f) != -1:
-                    dl_flag = True
-            if not dl_flag:
-                print("Skipping url: {}".format(url))
-                continue
             filename = url.split("/")[-1]
             target_filename = os.path.join(split_dir, filename)
+
+            matches = [f for f in files_to_dl if url.find(f) != -1]
+            if not matches: continue
+
             if not os.path.exists(target_filename):
+                print("Downloading file {} from {} to {}".format(filename, url, target_filename))
+                raise Exception("Error")
                 wget.download(url, split_dir)
+            else:
+                print("Skipping existing file from url: {}".format(url))
             print("Unpacking {}...".format(filename))
             tar = tarfile.open(target_filename)
             tar.extractall(split_dir)

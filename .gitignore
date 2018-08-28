@@ -100,7 +100,15 @@ ENV/
 # mkdocs documentation
 /site
 
+.idea/
+
 # deepspeech.pytorch-specific dirs
+warp-ctc/
+audio/
+ctcdecode/
+
 models/
 data/*.csv
-data/*_dataset/
+data/datasets/
+data/logs/
+data/manifests/

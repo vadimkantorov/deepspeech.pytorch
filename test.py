@@ -88,9 +88,10 @@ if __name__ == '__main__':
                 print("Hyp:", transcript.lower())
                 print("WER:", float(wer_inst) / len(reference.split()), "CER:", float(cer_inst) / len(reference), "\n")
 
-        del out, sizes
-        gc.collect()
-        torch.cuda.empty_cache()
+        del out, output_sizes
+        if (x+1) % 20 == 0:
+            gc.collect()
+            torch.cuda.empty_cache()
 
     if decoder is not None:
         wer = float(total_wer) / num_tokens

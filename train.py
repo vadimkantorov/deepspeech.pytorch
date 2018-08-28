@@ -155,9 +155,8 @@ if __name__ == '__main__':
             avg_loss = int(package.get('avg_loss', 0))
             loss_results, cer_results, wer_results = package['loss_results'], package[
                 'cer_results'], package['wer_results']
-            if main_proc and args.visdom and \
-                            package[
-                                'loss_results'] is not None and start_epoch > 0:  # Add previous scores to visdom graph
+            if main_proc and args.visdom and package['loss_results'] is not None and start_epoch > 0:
+                # Add previous scores to visdom graph
                 x_axis = epochs[0:start_epoch]
                 y_axis = torch.stack(
                     (loss_results[0:start_epoch], wer_results[0:start_epoch], cer_results[0:start_epoch]),
@@ -167,9 +166,8 @@ if __name__ == '__main__':
                     Y=y_axis,
                     opts=opts,
                 )
-            if main_proc and args.tensorboard and \
-                            package[
-                                'loss_results'] is not None and start_epoch > 0:  # Previous scores to tensorboard logs
+            if main_proc and args.tensorboard and package['loss_results'] is not None and start_epoch > 0:
+                # Previous scores to tensorboard logs
                 for i in range(start_epoch):
                     values = {
                         'Avg Train Loss': loss_results[i],
@@ -207,7 +205,7 @@ if __name__ == '__main__':
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.val_manifest, labels=labels,
                                       normalize=True, augment=False)
     if args.reverse_sort:
-        #XXX: A hack to test max memory load.
+        # XXX: A hack to test max memory load.
         train_dataset.ids.reverse()
 
     if not args.distributed:
@@ -286,16 +284,18 @@ if __name__ == '__main__':
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
                     (epoch + 1), (i + 1), len(train_sampler), batch_time=batch_time, data_time=data_time, loss=losses))
             if args.checkpoint_per_batch > 0 and i > 0 and (i + 1) % args.checkpoint_per_batch == 0 and main_proc:
-                file_path = '%s/deepspeech_checkpoint_epoch_%d_iter_%d.pth' % (save_folder, epoch + 1, i + 1)
+                file_path = '%s/deepspeech_checkpoint_epoch_%02d_iter_%05d.pth' % (save_folder, epoch + 1, i + 1)
                 print("Saving checkpoint model to %s" % file_path)
                 torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, iteration=i,
                                                 loss_results=loss_results,
                                                 wer_results=wer_results, cer_results=cer_results, avg_loss=avg_loss),
                            file_path)
-            del inputs, targets, input_percentages, target_sizes
-            del out, sizes, loss_sum
-            #gc.collect()
-            #torch.cuda.empty_cache()
+            del inputs, targets, input_percentages, input_sizes
+            del out, target_sizes, loss
+            if (i + 1) % 100 == 0:
+                #deal with GPU memory fragmentation
+                gc.collect()
+                torch.cuda.empty_cache()
 
         avg_loss /= len(train_sampler)
 
@@ -333,7 +333,7 @@ if __name__ == '__main__':
                 total_cer += cer
                 total_wer += wer
                 del inputs, targets, input_percentages, target_sizes
-                del out, sizes
+                del out, output_sizes
 
                 if args.cuda:
                     torch.cuda.synchronize()

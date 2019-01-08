@@ -5,7 +5,7 @@ import argparse
 import csv
 from multiprocessing.pool import ThreadPool
 import subprocess
-from utils import create_manifest
+from .utils import create_manifest
 
 parser = argparse.ArgumentParser(description='Downloads and processes Mozilla Common Voice dataset.')
 parser.add_argument("--target-dir", default='CommonVoice_dataset/', type=str, help="Directory to store the dataset.")

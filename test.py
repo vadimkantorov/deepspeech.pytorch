@@ -84,9 +84,9 @@ if __name__ == '__main__':
             num_tokens += len(reference.split())
             num_chars += len(reference)
             if args.verbose:
-                print("Ref:", reference.lower())
-                print("Hyp:", transcript.lower())
-                print("WER:", float(wer_inst) / len(reference.split()), "CER:", float(cer_inst) / len(reference), "\n")
+                print("Ref:", reference)
+                print("Hyp:", transcript)
+                #print("WER:", float(wer_inst) / len(reference.split()), "CER:", float(cer_inst) / len(reference), "\n")
 
         del out, output_sizes
         if (x+1) % 20 == 0:

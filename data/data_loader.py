@@ -151,6 +151,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         ids = [x.strip().split(',') for x in ids]
         self.ids = ids
         self.size = len(ids)
+        self.labels = labels
         self.labels_map = dict([(labels[i], i) for i in range(len(labels))])
         super(SpectrogramDataset, self).__init__(audio_conf, normalize, augment)
 
@@ -162,9 +163,15 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         return spect, transcript
 
     def parse_transcript(self, transcript_path):
+        transcript = []
         with open(transcript_path, 'r', encoding='utf8') as transcript_file:
-            transcript = transcript_file.read().replace('\n', '')
-        transcript = list(filter(None, [self.labels_map.get(x) for x in list(transcript)]))
+            chars = transcript_file.read().replace('\n', ' ')
+            for c in chars:
+                if c in self.labels_map:
+                    code = self.labels_map[c]
+                    if transcript and transcript[-1] == code:
+                        code = self.labels_map['2']  # double char
+                    transcript.append(code)
         return transcript
 
     def __len__(self):

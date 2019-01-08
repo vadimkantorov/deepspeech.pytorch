@@ -102,6 +102,13 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
+def build_optimizer(args_, parameters_):
+    import aggmo
+    #return aggmo.AggMo(model.parameters(), args_.lr, betas=[0, 0.6, 0.9])
+    return torch.optim.SGD(parameters_, lr=args_.lr,
+                    momentum=args_.momentum, nesterov=True)
+
+
 if __name__ == '__main__':
     args = parser.parse_args()
     args.distributed = args.world_size > 1
@@ -123,6 +130,7 @@ if __name__ == '__main__':
 
         viz = Visdom()
         opts = dict(title=args.id, ylabel='', xlabel='Epoch', legend=['Loss', 'WER', 'CER'])
+        opts['layoutopts']={'plotly': {'yaxis': {'type': 'log'}}}
         viz_window = None
         epochs = torch.arange(1, args.epochs + 1)
     if args.tensorboard and main_proc:
@@ -140,8 +148,7 @@ if __name__ == '__main__':
         labels = DeepSpeech.get_labels(model)
         audio_conf = DeepSpeech.get_audio_conf(model)
         parameters = model.parameters()
-        optimizer = torch.optim.SGD(parameters, lr=args.lr,
-                                    momentum=args.momentum, nesterov=True)
+        optimizer = build_optimizer(args, parameters)
         if not args.finetune:  # Don't want to restart training
             model = model.to(device)
             optimizer.load_state_dict(package['optim_dict'])
@@ -196,8 +203,7 @@ if __name__ == '__main__':
                            audio_conf=audio_conf,
                            bidirectional=args.bidirectional)
         parameters = model.parameters()
-        optimizer = torch.optim.SGD(parameters, lr=args.lr,
-                                    momentum=args.momentum, nesterov=True)
+        optimizer = build_optimizer(args, parameters)
     criterion = CTCLoss()
     decoder = GreedyDecoder(labels)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.train_manifest, labels=labels,

@@ -14,6 +14,7 @@ import torchaudio
 import math
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
+import csv
 
 windows = {'hamming': scipy.signal.hamming, 'hann': scipy.signal.hann, 'blackman': scipy.signal.blackman,
            'bartlett': scipy.signal.bartlett}
@@ -109,9 +110,10 @@ class SpectrogramParser(AudioParser):
             add_noise = np.random.binomial(1, self.noise_prob)
             if add_noise:
                 y = self.noiseInjector.inject_noise(y)
-        n_fft = int(self.sample_rate * self.window_size)
+        n_fft = int(self.sample_rate * (self.window_size+1e-8))
         win_length = n_fft
-        hop_length = int(self.sample_rate * self.window_stride)
+        hop_length = int(self.sample_rate * (self.window_stride+1e-8))
+        # print(n_fft, win_length, hop_length)
         # STFT
         D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
@@ -132,7 +134,7 @@ class SpectrogramParser(AudioParser):
 
 
 class SpectrogramDataset(Dataset, SpectrogramParser):
-    def __init__(self, audio_conf, manifest_filepath, labels, normalize=False, augment=False):
+    def __init__(self, audio_conf, manifest_filepath, labels, normalize=False, augment=False, max_items=None):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -146,9 +148,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         :param normalize: Apply standard mean and deviation normalization to audio tensor
         :param augment(default False):  Apply random tempo and gain perturbations
         """
-        with open(manifest_filepath) as f:
-            ids = f.readlines()
-        ids = [x.strip().split(',') for x in ids]
+        with open(manifest_filepath, newline='') as f:
+            spamreader = csv.reader(f)
+            ids = [row for row in spamreader]
+        if max_items:
+            ids = ids[:max_items]
+        print("Found entries:", len(ids))
         self.ids = ids
         self.size = len(ids)
         self.labels = labels
@@ -160,18 +165,41 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         audio_path, transcript_path = sample[0], sample[1]
         spect = self.parse_audio(audio_path)
         transcript = self.parse_transcript(transcript_path)
-        return spect, transcript
+        return spect, transcript, audio_path
+
+    DIGITS = {
+        '0': 'ноль*',
+        '1': 'один*',
+        '2': 'два*',
+        '3': 'три*',
+        '4': 'четыре*',
+        '5': 'пять*',
+        '6': 'шесть*',
+        '7': 'семь*',
+        '8': 'восемь*',
+        '9': 'девять*',
+    }
+
+    def getch(self, c):
+        if c.isdigit():
+            return ' ' + self.DIGITS[c] + ' '
+        if c == '*':
+            return ' '
+        if c in self.labels_map:
+            return c
+        return ' '
 
     def parse_transcript(self, transcript_path):
         transcript = []
         with open(transcript_path, 'r', encoding='utf8') as transcript_file:
-            chars = transcript_file.read().replace('\n', ' ')
-            for c in chars:
-                if c in self.labels_map:
-                    code = self.labels_map[c]
-                    if transcript and transcript[-1] == code:
-                        code = self.labels_map['2']  # double char
-                    transcript.append(code)
+            chars = transcript_file.read().upper()
+            chars = ''.join([self.getch(c) for c in chars])
+            for c in ' '.join(chars.split()):
+                code = self.labels_map[c]
+                if transcript and transcript[-1] == code:
+                    code = self.labels_map['2']  # double char
+                transcript.append(code)
+        # print(''.join([self.labels[c] for c in transcript]))
         return transcript
 
     def __len__(self):
@@ -191,17 +219,19 @@ def _collate_fn(batch):
     input_percentages = torch.FloatTensor(minibatch_size)
     target_sizes = torch.IntTensor(minibatch_size)
     targets = []
+    filenames = []
     for x in range(minibatch_size):
         sample = batch[x]
         tensor = sample[0]
         target = sample[1]
+        filenames.append(sample[2])
         seq_length = tensor.size(1)
         inputs[x][0].narrow(1, 0, seq_length).copy_(tensor)
         input_percentages[x] = seq_length / float(max_seqlength)
         target_sizes[x] = len(target)
         targets.extend(target)
     targets = torch.IntTensor(targets)
-    return inputs, targets, input_percentages, target_sizes
+    return inputs, targets, filenames, input_percentages, target_sizes
 
 
 class AudioDataLoader(DataLoader):

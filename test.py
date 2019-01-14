@@ -6,6 +6,7 @@ import gc
 from tqdm import tqdm
 
 from data.data_loader import SpectrogramDataset, AudioDataLoader
+from data.utils import get_cer_wer
 from decoder import GreedyDecoder
 from model import DeepSpeech
 from opts import add_decoder_args, add_inference_args
@@ -17,6 +18,7 @@ parser.add_argument('--test-manifest', metavar='DIR',
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--verbose', action="store_true", help="print out decoded output and error of each sample")
+parser.add_argument('--errors', action="store_true", help="print error report")
 no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration options for when no decoder is "
                                                                   "specified")
 no_decoder_args.add_argument('--output-path', default=None, type=str, help="Where to save raw acoustic output")
@@ -45,7 +47,7 @@ if __name__ == '__main__':
         decoder = None
     target_decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.test_manifest, labels=labels,
-                                      normalize=True)
+                                      normalize=False)
     #import random;random.shuffle(test_dataset.ids)
 
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
@@ -53,7 +55,7 @@ if __name__ == '__main__':
     total_cer, total_wer, num_tokens, num_chars = 0, 0, 0, 0
     output_data = []
     for i, (data) in tqdm(enumerate(test_loader), total=len(test_loader)):
-        inputs, targets, input_percentages, target_sizes = data
+        inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
         # unflatten targets
@@ -77,16 +79,26 @@ if __name__ == '__main__':
         target_strings = target_decoder.convert_to_strings(split_targets)
         for x in range(len(target_strings)):
             transcript, reference = decoded_output[x][0], target_strings[x][0]
-            wer_inst = decoder.wer(transcript, reference)
-            cer_inst = decoder.cer(transcript, reference)
-            total_wer += wer_inst
-            total_cer += cer_inst
-            num_tokens += len(reference.split())
-            num_chars += len(reference)
+            wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
+
             if args.verbose:
                 print("Ref:", reference)
                 print("Hyp:", transcript)
-                #print("WER:", float(wer_inst) / len(reference.split()), "CER:", float(cer_inst) / len(reference), "\n")
+                print("Wav:", filenames[x])
+                print("WER:", "{:.2f}".format(100 * wer / wer_ref), "CER:", "{:.2f}".format(100 * cer / cer_ref), "\n")
+            elif args.errors:
+                if cer / cer_ref > 0.3:
+                    #print("FN:", )
+                    print("Ref:", reference)
+                    print("Hyp:", transcript)
+                    print("Wav:", filenames[x])
+                    print("WER:", "{:.2f}".format(100 * wer / wer_ref), "CER:", "{:.2f}".format(100 * cer / cer_ref), "\n")
+
+            total_wer += wer
+            total_cer += cer
+            num_tokens += wer_ref
+            num_chars += cer_ref
+
 
         del out, output_sizes
         if (x+1) % 20 == 0:
@@ -94,11 +106,11 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
 
     if decoder is not None:
-        wer = float(total_wer) / num_tokens
-        cer = float(total_cer) / num_chars
+        wer_avg = float(total_wer) / num_tokens
+        cer_avg = float(total_cer) / num_chars
 
         print('Test Summary \t'
               'Average WER {wer:.3f}\t'
-              'Average CER {cer:.3f}\t'.format(wer=wer * 100, cer=cer * 100))
+              'Average CER {cer:.3f}\t'.format(wer=wer_avg * 100, cer=cer_avg * 100))
     else:
         np.save(args.output_path, output_data)

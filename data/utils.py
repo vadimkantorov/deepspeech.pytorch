@@ -36,9 +36,22 @@ def order_and_prune_files(file_paths, min_duration, max_duration):
     duration_file_paths.sort(key=func)
     return [x[0] for x in duration_file_paths]  # Remove durations
 
+
 def reduce_tensor(tensor, world_size):
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.reduce_op.SUM)
     rt /= world_size
     return rt
 
+
+def get_cer_wer(decoder, transcript, reference):
+    reference = reference.strip()
+    transcript = transcript.strip()
+    wer_ref = float(len(reference.split()) or 1)
+    cer_ref = float(len(reference) or 1)
+    if reference == transcript:
+        return 0, 0, wer_ref, cer_ref
+    else:
+        wer = decoder.wer(transcript, reference)
+        cer = decoder.cer(transcript, reference)
+    return wer, cer, wer_ref, cer_ref

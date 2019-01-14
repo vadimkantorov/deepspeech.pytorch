@@ -19,6 +19,7 @@ parser = add_inference_args(parser)
 parser.add_argument('--audio-path', default='audio.wav',
                     help='Audio file to predict on')
 parser.add_argument('--offsets', dest='offsets', action='store_true', help='Returns time offset information')
+parser.add_argument('--meta', dest='meta', action='store_true', help='Returns meta information')
 parser = add_decoder_args(parser)
 args = parser.parse_args()
 
@@ -26,7 +27,9 @@ args = parser.parse_args()
 def decode_results(model, decoded_output, decoded_offsets):
     results = {
         "output": [],
-        "_meta": {
+    }
+    if args.meta:
+        results["_meta"] = {
             "acoustic_model": {
                 "name": os.path.basename(args.model_path)
             },
@@ -40,8 +43,7 @@ def decode_results(model, decoded_output, decoded_offsets):
                 "type": args.decoder,
             }
         }
-    }
-    results['_meta']['acoustic_model'].update(DeepSpeech.get_meta(model))
+        results['_meta']['acoustic_model'].update(DeepSpeech.get_meta(model))
 
     for b in range(len(decoded_output)):
         for pi in range(min(args.top_paths, len(decoded_output[b]))):
@@ -55,7 +57,7 @@ def decode_results(model, decoded_output, decoded_offsets):
 def transcribe(audio_path, parser, model, decoder, device):
     spect = parser.parse_audio(audio_path).contiguous()
     spect = spect.view(1, 1, spect.size(0), spect.size(1))
-    spect.to(device)
+    spect = spect.to(device)
     input_sizes = torch.IntTensor([spect.size(3)]).int()
     out, output_sizes = model(spect, input_sizes)
     decoded_output, decoded_offsets = decoder.decode(out, output_sizes)
@@ -66,7 +68,7 @@ if __name__ == '__main__':
     torch.set_grad_enabled(False)
     model = DeepSpeech.load_model(args.model_path)
     device = torch.device("cuda" if args.cuda else "cpu")
-    model.to(device)
+    model = model.to(device)
     model.eval()
 
     labels = DeepSpeech.get_labels(model)
@@ -81,7 +83,7 @@ if __name__ == '__main__':
     else:
         decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
 
-    parser = SpectrogramParser(audio_conf, normalize=True)
+    parser = SpectrogramParser(audio_conf, normalize=False)
 
     decoded_output, decoded_offsets = transcribe(args.audio_path, parser, model, decoder, device)
-    print(json.dumps(decode_results(model, decoded_output, decoded_offsets)))
+    print(json.dumps(decode_results(model, decoded_output, decoded_offsets), ensure_ascii=False))

@@ -92,14 +92,46 @@ class BatchRNN(nn.Module):
         self.rnn.flatten_parameters()
 
     def forward(self, x, output_lengths):
+        assert x.is_cuda
+        max_seq_length = x.size(0)
         if self.batch_norm is not None:
             x = self.batch_norm(x)
-        x = nn.utils.rnn.pack_padded_sequence(x, output_lengths)
+            # x = x._replace(data=self.batch_norm(x.data))
+        x = nn.utils.rnn.pack_padded_sequence(x, output_lengths.data.squeeze(0).cpu().numpy())
         x, h = self.rnn(x)
-        x, _ = nn.utils.rnn.pad_packed_sequence(x)
+        x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
         if self.bidirectional:
             x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)  # (TxNxH*2) -> (TxNxH) by sum
+        #x = x.to('cuda')
         return x
+
+
+class DeepBatchRNN(nn.Module):
+    def __init__(self, input_size, hidden_size, rnn_type=nn.LSTM, bidirectional=False, num_layers=1,
+                 batch_norm=True, sum_directions=True, **kwargs):
+        super(DeepBatchRNN, self).__init__()
+        self._bidirectional = bidirectional
+        rnns = []
+        rnn = BatchRNN(input_size=input_size, hidden_size=hidden_size, rnn_type=rnn_type, bidirectional=bidirectional,
+                       batch_norm=False)
+        rnns.append(('0', rnn))
+        for x in range(num_layers - 1):
+            rnn = BatchRNN(input_size=hidden_size, hidden_size=hidden_size, rnn_type=rnn_type,
+                           bidirectional=bidirectional, batch_norm=batch_norm)
+            rnns.append(('%d' % (x + 1), rnn))
+        self.rnns = nn.Sequential(OrderedDict(rnns))
+        self.sum_directions = sum_directions
+
+    def flatten_parameters(self):
+        for x in range(len(self.rnns)):
+            self.rnns[x].flatten_parameters()
+
+    def forward(self, x, lengths):
+        max_seq_length = x.size(0)
+        x = nn.utils.rnn.pack_padded_sequence(x, lengths.data.squeeze(0).cpu().numpy())
+        x = self.rnns(x)
+        x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
+        return x, None
 
 
 class Lookahead(nn.Module):
@@ -201,24 +233,32 @@ class DeepSpeech(nn.Module):
         self.inference_softmax = InferenceBatchSoftmax()
 
     def forward(self, x, lengths):
+        assert x.is_cuda
         lengths = lengths.cpu().int()
-        output_lengths = self.get_seq_lens(lengths)
+        output_lengths = self.get_seq_lens(lengths).cuda()
         x, _ = self.conv(x, output_lengths)
+        assert x.is_cuda
+        #x = x.to('cuda')
 
         sizes = x.size()
         x = x.view(sizes[0], sizes[1] * sizes[2], sizes[3])  # Collapse feature dimension
         x = x.transpose(1, 2).transpose(0, 1).contiguous()  # TxNxH
+        assert x.is_cuda
 
         for rnn in self.rnns:
             x = rnn(x, output_lengths)
+            assert x.is_cuda
 
         if not self._bidirectional:  # no need for lookahead layer in bidirectional
             x = self.lookahead(x)
+            assert x.is_cuda
 
         x = self.fc(x)
+        assert x.is_cuda
         x = x.transpose(0, 1)
         # identity in training mode, softmax in eval mode
         x = self.inference_softmax(x)
+        assert x.is_cuda
         return x, output_lengths
 
     def get_seq_lens(self, input_length):
@@ -318,17 +358,15 @@ class DeepSpeech(nn.Module):
                isinstance(model, torch.nn.parallel.DistributedDataParallel)
 
 
-if __name__ == '__main__':
+def main():
     import os.path
     import argparse
-
     parser = argparse.ArgumentParser(description='DeepSpeech model information')
     parser.add_argument('--model-path', default='models/deepspeech_final.pth',
                         help='Path to model file created by training')
     args = parser.parse_args()
     package = torch.load(args.model_path, map_location=lambda storage, loc: storage)
     model = DeepSpeech.load_model(args.model_path)
-
     print("Model name:         ", os.path.basename(args.model_path))
     print("DeepSpeech version: ", model._version)
     print("")
@@ -344,7 +382,6 @@ if __name__ == '__main__':
     print("  Window Type:      ", model._audio_conf.get("window", "n/a"))
     print("  Window Size:      ", model._audio_conf.get("window_size", "n/a"))
     print("  Window Stride:    ", model._audio_conf.get("window_stride", "n/a"))
-
     if package.get('loss_results', None) is not None:
         print("")
         print("Training Information")
@@ -353,9 +390,12 @@ if __name__ == '__main__':
         print("  Current Loss:      {0:.3f}".format(package['loss_results'][epochs - 1]))
         print("  Current CER:       {0:.3f}".format(package['cer_results'][epochs - 1]))
         print("  Current WER:       {0:.3f}".format(package['wer_results'][epochs - 1]))
-
     if package.get('meta', None) is not None:
         print("")
         print("Additional Metadata")
         for k, v in model._meta:
             print("  ", k, ": ", v)
+
+
+if __name__ == '__main__':
+    main()

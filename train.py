@@ -36,6 +36,7 @@ parser.add_argument('--epochs', default=70, type=int, help='Number of training e
 parser.add_argument('--cuda', dest='cuda', action='store_true', help='Use cuda to train model')
 parser.add_argument('--lr', '--learning-rate', default=3e-4, type=float, help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
+parser.add_argument('--batch-norm-momentum', default=0.1, type=float, help='BatchNorm momentum')
 parser.add_argument('--max-norm', default=400, type=int, help='Norm cutoff to prevent explosion of gradients')
 parser.add_argument('--learning-anneal', default=1.1, type=float, help='Annealing applied to learning rate every epoch')
 parser.add_argument('--silent', dest='silent', action='store_true', help='Turn off progress tracking per iteration')
@@ -328,6 +329,7 @@ class Trainer:
 
 
 def train(from_epoch, from_iter):
+    print('Starting training with id="{}" at GPU="{}" with lr={}'.format(args.id, args.gpu_rank or VISIBLE_DEVICES[0], get_lr()))
     trainer = Trainer()
     best_wer = None
     for epoch in range(from_epoch, args.epochs):
@@ -351,7 +353,7 @@ def train(from_epoch, from_iter):
 
             if args.checkpoint_per_batch > 0 and is_leader:
                 if 0 < i < len(train_sampler) - 1 and (i + 1) % args.checkpoint_per_batch == 0:
-                    file_path = '%s/deepspeech_checkpoint_epoch_%02d_iter_%05d.pth' % (save_folder, epoch + 1, i + 1)
+                    file_path = '%s/checkpoint_epoch_%02d_iter_%05d.model' % (save_folder, epoch + 1, i + 1)
                     print("Saving checkpoint model to %s" % file_path)
                     torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, iteration=i,
                                                     loss_results=plots.loss_results,
@@ -428,6 +430,7 @@ if __name__ == '__main__':
         if not args.finetune:  # Don't want to restart training
             model = model.to(device)
             optimizer.load_state_dict(package['optim_dict'])
+            set_lr(args.lr)
             start_epoch = int(package.get('epoch', 1)) - 1  # Index start at 0 for training
             start_iter = package.get('iteration', None)
             if start_iter is None:
@@ -460,7 +463,8 @@ if __name__ == '__main__':
                            labels=labels,
                            rnn_type=supported_rnns[rnn_type],
                            audio_conf=audio_conf,
-                           bidirectional=args.bidirectional)
+                           bidirectional=args.bidirectional,
+                           bnm=args.batch_norm_momentum)
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
 

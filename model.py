@@ -78,12 +78,13 @@ class InferenceBatchSoftmax(nn.Module):
 
 
 class BatchRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, rnn_type=nn.LSTM, bidirectional=False, batch_norm=True):
+    def __init__(self, input_size, hidden_size, rnn_type=nn.LSTM, bidirectional=False, batch_norm=True, bnm=0.1):
         super(BatchRNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.bidirectional = bidirectional
-        self.batch_norm = SequenceWise(nn.BatchNorm1d(input_size)) if batch_norm else None
+        self.bnm = bnm
+        self.batch_norm = SequenceWise(nn.BatchNorm1d(input_size, momentum=bnm)) if batch_norm else None
         self.rnn = rnn_type(input_size=input_size, hidden_size=hidden_size,
                             bidirectional=bidirectional, bias=True)
         self.num_directions = 2 if bidirectional else 1
@@ -176,7 +177,7 @@ class Lookahead(nn.Module):
 
 class DeepSpeech(nn.Module):
     def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=5, audio_conf=None,
-                 bidirectional=True, context=20):
+                 bidirectional=True, context=20, bnm=0.1):
         super(DeepSpeech, self).__init__()
 
         # model metadata needed for serialization/deserialization
@@ -189,6 +190,7 @@ class DeepSpeech(nn.Module):
         self._audio_conf = audio_conf or {}
         self._labels = labels
         self._bidirectional = bidirectional
+        self._bnm = bnm
 
         sample_rate = self._audio_conf.get("sample_rate", 16000)
         window_size = self._audio_conf.get("window_size", 0.02)
@@ -196,16 +198,16 @@ class DeepSpeech(nn.Module):
 
         self.conv = MaskConv(nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(20, 5)),
-            nn.BatchNorm2d(32),
+            nn.BatchNorm2d(32, momentum=bnm),
             nn.Hardtanh(0, 20, inplace=True),
             nn.Conv2d(32, 32, kernel_size=(21, 11), stride=(2, 1), padding=(10, 5)),
-            nn.BatchNorm2d(32),
+            nn.BatchNorm2d(32, momentum=bnm),
             nn.Hardtanh(0, 20, inplace=True)
         ))
         # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
-        rnn_input_size = int(math.floor((sample_rate * window_size) / 2) + 1)
-        rnn_input_size = int(math.floor(rnn_input_size + 2 * 20 - 41) / 2 + 1)
-        rnn_input_size = int(math.floor(rnn_input_size + 2 * 10 - 21) / 2 + 1)
+        rnn_input_size = int(math.floor((sample_rate * window_size + 1e-2) / 2) + 1)
+        rnn_input_size = int(math.floor(rnn_input_size + 2 * 20 - 41 + 1e-2) / 2 + 1)
+        rnn_input_size = int(math.floor(rnn_input_size + 2 * 10 - 21 + 1e-2) / 2 + 1)
         rnn_input_size *= 32
 
         rnns = []
@@ -214,7 +216,7 @@ class DeepSpeech(nn.Module):
         rnns.append(('0', rnn))
         for x in range(nb_layers - 1):
             rnn = BatchRNN(input_size=rnn_hidden_size, hidden_size=rnn_hidden_size, rnn_type=rnn_type,
-                           bidirectional=bidirectional)
+                           bidirectional=bidirectional, bnm=bnm)
             rnns.append(('%d' % (x + 1), rnn))
         self.rnns = nn.Sequential(OrderedDict(rnns))
         self.lookahead = nn.Sequential(
@@ -224,7 +226,7 @@ class DeepSpeech(nn.Module):
         ) if not bidirectional else None
 
         fully_connected = nn.Sequential(
-            nn.BatchNorm1d(rnn_hidden_size),
+            nn.BatchNorm1d(rnn_hidden_size, momentum=bnm),
             nn.Linear(rnn_hidden_size, num_classes, bias=False)
         )
         self.fc = nn.Sequential(
@@ -259,6 +261,7 @@ class DeepSpeech(nn.Module):
         # identity in training mode, softmax in eval mode
         x = self.inference_softmax(x)
         assert x.is_cuda
+        assert output_lengths.is_cuda
         return x, output_lengths
 
     def get_seq_lens(self, input_length):
@@ -277,9 +280,13 @@ class DeepSpeech(nn.Module):
     @classmethod
     def load_model(cls, path):
         package = torch.load(path, map_location=lambda storage, loc: storage)
-        model = cls(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
-                    labels=package['labels'], audio_conf=package['audio_conf'],
-                    rnn_type=supported_rnns[package['rnn_type']], bidirectional=package.get('bidirectional', True))
+        model = cls(rnn_hidden_size=package['hidden_size'],
+                    nb_layers=package['hidden_layers'],
+                    labels=package['labels'],
+                    audio_conf=package['audio_conf'],
+                    rnn_type=supported_rnns[package['rnn_type']],
+                    bnm=package.get('bnm', 0.1),
+                    bidirectional=package.get('bidirectional', True))
         model.load_state_dict(package['state_dict'])
         for x in model.rnns:
             x.flatten_parameters()
@@ -287,9 +294,13 @@ class DeepSpeech(nn.Module):
 
     @classmethod
     def load_model_package(cls, package):
-        model = cls(rnn_hidden_size=package['hidden_size'], nb_layers=package['hidden_layers'],
-                    labels=package['labels'], audio_conf=package['audio_conf'],
-                    rnn_type=supported_rnns[package['rnn_type']], bidirectional=package.get('bidirectional', True))
+        model = cls(rnn_hidden_size=package['hidden_size'],
+                    nb_layers=package['hidden_layers'],
+                    labels=package['labels'],
+                    audio_conf=package['audio_conf'],
+                    rnn_type=supported_rnns[package['rnn_type']],
+                    bnm=package.get('bnm', 0.1),
+                    bidirectional=package.get('bidirectional', True))
         model.load_state_dict(package['state_dict'])
         return model
 
@@ -305,7 +316,8 @@ class DeepSpeech(nn.Module):
             'audio_conf': model._audio_conf,
             'labels': model._labels,
             'state_dict': model.state_dict(),
-            'bidirectional': model._bidirectional
+            'bnm': model._bnm,
+            'bidirectional': model._bidirectional,
         }
         if optimizer is not None:
             package['optim_dict'] = optimizer.state_dict()

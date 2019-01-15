@@ -39,6 +39,8 @@ parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--batch-norm-momentum', default=0.1, type=float, help='BatchNorm momentum')
 parser.add_argument('--max-norm', default=400, type=int, help='Norm cutoff to prevent explosion of gradients')
 parser.add_argument('--learning-anneal', default=1.1, type=float, help='Annealing applied to learning rate every epoch')
+parser.add_argument('--checkpoint-anneal', default=1.0, type=float,
+                    help='Annealing applied to learning rate every checkpoint')
 parser.add_argument('--silent', dest='silent', action='store_true', help='Turn off progress tracking per iteration')
 parser.add_argument('--checkpoint', dest='checkpoint', action='store_true', help='Enables checkpoint saving of model')
 parser.add_argument('--checkpoint-per-batch', default=0, type=int, help='Save checkpoint per batch. 0 means never save')
@@ -115,10 +117,11 @@ def build_optimizer(args_, parameters_):
 
 
 viz = None
+tensorboard_writer = None
 
 
 class PlotWindow:
-    def __init__(self, title, suffix):
+    def __init__(self, title, suffix, log_x=False, log_y=False):
         self.loss_results = torch.Tensor(10000)
         self.cer_results = torch.Tensor(10000)
         self.wer_results = torch.Tensor(10000)
@@ -129,7 +132,11 @@ class PlotWindow:
         hour_now = str(datetime.datetime.now()).split('.', 1)[0][:-3]
 
         self.opts = dict(title=title + ': ' + hour_now, ylabel='', xlabel=suffix, legend=['Loss', 'WER', 'CER'])
-        self.opts['layoutopts'] = {'plotly': {'yaxis': {'type': 'log'}}}
+        self.opts['layoutopts'] = {'plotly': {}}
+        if log_x:
+            self.opts['layoutopts']['plotly'] = {'xaxis': {'type': 'log'}}
+        if log_y:
+            self.opts['layoutopts']['plotly'] = {'yaxis': {'type': 'log'}}
 
         if args.visdom and is_leader:
             if viz is None:
@@ -138,20 +145,20 @@ class PlotWindow:
 
         if args.tensorboard and is_leader:
             os.makedirs(args.log_dir, exist_ok=True)
-            from tensorboardX import SummaryWriter
+            if tensorboard_writer is None:
+                from tensorboardX import SummaryWriter
+                tensorboard_writer = SummaryWriter(args.log_dir)
 
-            tensorboard_writer = SummaryWriter(args.log_dir)
-
-    def plot_history(self, start_epoch, total_avg_loss):
+    def plot_history(self, position):
         global viz, tensorboard_writer
 
         if is_leader and args.visdom:
             # Add previous scores to visdom graph
-            x_axis = self.epochs[0:start_epoch]
+            x_axis = self.epochs[0:position]
             y_axis = torch.stack(
-                (self.loss_results[0:start_epoch],
-                 self.wer_results[0:start_epoch],
-                 self.cer_results[0:start_epoch]),
+                (self.loss_results[0:position],
+                 self.wer_results[0:position],
+                 self.cer_results[0:position]),
                 dim=1)
             self.viz_window = viz.line(
                 X=x_axis,
@@ -160,7 +167,7 @@ class PlotWindow:
             )
         if is_leader and args.tensorboard:
             # Previous scores to tensorboard logs
-            for i in range(start_epoch):
+            for i in range(position):
                 values = {
                     'Avg Train Loss': self.loss_results[i],
                     'Avg WER': self.wer_results[i],
@@ -174,7 +181,9 @@ class PlotWindow:
         if args.visdom and is_leader:
             x_axis = self.epochs[0:epoch + 1]
             y_axis = torch.stack(
-                (self.loss_results[0:epoch + 1], self.wer_results[0:epoch + 1], self.cer_results[0:epoch + 1]), dim=1)
+                (self.loss_results[0:epoch + 1],
+                 self.wer_results[0:epoch + 1],
+                 self.cer_results[0:epoch + 1]), dim=1)
             if self.viz_window is None:
                 self.viz_window = viz.line(
                     X=x_axis,
@@ -202,78 +211,165 @@ class PlotWindow:
                     tensorboard_writer.add_histogram(tag + '/grad', to_np(value.grad), epoch + 1)
 
 
+class LRPlotWindow:
+    def __init__(self, title, suffix, log_x=False, log_y=False):
+        self.loss_results = torch.Tensor(10000)
+        self.epochs = torch.Tensor(10000)
+        self.viz_window = None
+        self.suffix = suffix
+
+        global viz, tensorboard_writer
+        hour_now = str(datetime.datetime.now()).split('.', 1)[0][:-3]
+
+        self.opts = dict(title=title + ': ' + hour_now, ylabel='', xlabel=suffix, legend=['Loss'])
+        self.opts['layoutopts'] = {'plotly': {}}
+        if log_x:
+            self.opts['layoutopts']['plotly'] = {'xaxis': {'type': 'log'}}
+        if log_y:
+            self.opts['layoutopts']['plotly'] = {'yaxis': {'type': 'log'}}
+
+        if args.visdom and is_leader:
+            if viz is None:
+                from visdom import Visdom
+                viz = Visdom()
+
+        if args.tensorboard and is_leader:
+            os.makedirs(args.log_dir, exist_ok=True)
+            if tensorboard_writer is None:
+                from tensorboardX import SummaryWriter
+                tensorboard_writer = SummaryWriter(args.log_dir)
+
+    def plot_progress(self, epoch, avg_loss, cer_avg, wer_avg):
+        global viz, tensorboard_writer
+
+        if args.visdom and is_leader:
+            x_axis = self.epochs[0:epoch + 1]
+            y_axis = torch.stack((
+                self.loss_results[0:epoch + 1],
+            ), dim=1)
+            if self.viz_window is None:
+                self.viz_window = viz.line(
+                    X=x_axis,
+                    Y=y_axis,
+                    opts=self.opts,
+                )
+            else:
+                viz.line(
+                    X=x_axis,
+                    Y=y_axis,
+                    win=self.viz_window,
+                    update='replace',
+                )
+        if args.tensorboard and is_leader:
+            values = {
+                'Avg Train Loss': avg_loss,
+            }
+            tensorboard_writer.add_scalars(args.id, values, epoch + 1)
+            if args.log_params:
+                for tag, value in model.named_parameters():
+                    tag = tag.replace('.', '/')
+                    tensorboard_writer.add_histogram(tag, to_np(value), epoch + 1)
+                    tensorboard_writer.add_histogram(tag + '/grad', to_np(value.grad), epoch + 1)
+
+
 def get_lr():
     optim_state = optimizer.state_dict()
     return optim_state['param_groups'][0]['lr']
 
 
 def set_lr(lr):
+    print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))
     optim_state = optimizer.state_dict()
     optim_state['param_groups'][0]['lr'] = lr
     optimizer.load_state_dict(optim_state)
 
 
+def check_model_quality(epoch, checkpoint):
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    total_cer, total_wer, total_loss = 0, 0, 0
+    num_tokens, num_chars, num_losses = 0, 0, 0
+    model.eval()
+    with torch.no_grad():
+        for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
+            inputs, targets, filenames, input_percentages, target_sizes = data
+            input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
+
+            # unflatten targets
+            split_targets = []
+            offset = 0
+            for size in target_sizes:
+                split_targets.append(targets[offset:offset + size])
+                offset += size
+
+            inputs = inputs.to(device)
+
+            out, output_sizes = model(inputs, input_sizes)
+
+            loss = criterion(out.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
+            loss = loss / inputs.size(0)  # average the loss by minibatch
+            inf = float("inf")
+            if args.distributed:
+                loss_value = reduce_tensor(loss, args.world_size).item()
+            else:
+                loss_value = loss.item()
+            if loss_value == inf or loss_value == -inf:
+                print("WARNING: received an inf loss, setting loss value to 1000")
+                loss_value = 1000
+            total_loss += float(loss_value)
+            num_losses += 1
+
+            decoded_output, _ = decoder.decode(out, output_sizes)
+            target_strings = decoder.convert_to_strings(split_targets)
+            for x in range(len(target_strings)):
+                transcript, reference = decoded_output[x][0], target_strings[x][0]
+                wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
+
+                total_wer += wer
+                total_cer += cer
+                num_tokens += wer_ref
+                num_chars += cer_ref
+
+            del inputs, targets, input_percentages, target_sizes
+            del out, output_sizes, input_sizes
+            del split_targets, loss
+
+            if args.cuda:
+                torch.cuda.synchronize()
+
+        avg_wer = 100 * total_wer / num_tokens
+        avg_cer = 100 * total_cer / num_chars
+        print('Validation Summary Epoch: [{0}]\t'
+              'Average WER {wer:.3f}\t'
+              'Average CER {cer:.3f}\t'.format(epoch + 1, wer=avg_wer, cer=avg_cer))
+
+        avg_loss = total_loss / num_losses
+        plots.loss_results[epoch] = avg_loss
+        plots.wer_results[epoch] = avg_wer
+        plots.cer_results[epoch] = avg_cer
+        plots.epochs[epoch] = epoch+1
+
+        checkpoint_plots.loss_results[checkpoint] = avg_loss
+        checkpoint_plots.wer_results[checkpoint] = avg_wer
+        checkpoint_plots.cer_results[checkpoint] = avg_cer
+        checkpoint_plots.epochs[checkpoint] = checkpoint+1
+
+        plots.plot_progress(epoch, avg_loss, avg_cer, avg_wer)
+        checkpoint_plots.plot_progress(checkpoint, avg_loss, avg_cer, avg_wer)
+
+        if args.checkpoint_anneal:
+            global lr_plots
+            lr_plots.loss_results[checkpoint] = avg_loss
+            lr_plots.epochs[checkpoint:] = get_lr()
+            lr_plots.plot_progress(checkpoint, avg_loss, avg_cer, avg_wer)
+    return avg_wer, avg_loss
+
+# 7e-6 .. 5e-5 = safe LR
+
 class Trainer:
     def __init__(self):
         self.end = time.time()
-
-    def check_model_quality(self, epoch, checkpoint, avg_loss):
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        total_cer, total_wer, num_tokens, num_chars = 0, 0, 0, 0
-        model.eval()
-        with torch.no_grad():
-            for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
-                inputs, targets, filenames, input_percentages, target_sizes = data
-                input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
-
-                # unflatten targets
-                split_targets = []
-                offset = 0
-                for size in target_sizes:
-                    split_targets.append(targets[offset:offset + size])
-                    offset += size
-
-                inputs = inputs.to(device)
-
-                out, output_sizes = model(inputs, input_sizes)
-
-                decoded_output, _ = decoder.decode(out, output_sizes)
-                target_strings = decoder.convert_to_strings(split_targets)
-                for x in range(len(target_strings)):
-                    transcript, reference = decoded_output[x][0], target_strings[x][0]
-                    wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
-
-                    total_wer += wer
-                    total_cer += cer
-                    num_tokens += wer_ref
-                    num_chars += cer_ref
-
-                del inputs, targets, input_percentages, target_sizes
-                del out, output_sizes, input_sizes
-                del split_targets
-
-                if args.cuda:
-                    torch.cuda.synchronize()
-
-            avg_wer = 100 * total_wer / num_tokens
-            avg_cer = 100 * total_cer / num_chars
-            print('Validation Summary Epoch: [{0}]\t'
-                  'Average WER {wer:.3f}\t'
-                  'Average CER {cer:.3f}\t'.format(epoch + 1, wer=avg_wer, cer=avg_cer))
-
-            plots.loss_results[epoch] = avg_loss
-            plots.wer_results[epoch] = avg_wer
-            plots.cer_results[epoch] = avg_cer
-
-            plots_checkpoints.loss_results[checkpoint] = avg_loss
-            plots_checkpoints.wer_results[checkpoint] = avg_wer
-            plots_checkpoints.cer_results[checkpoint] = avg_cer
-
-            plots.plot_progress(epoch, avg_loss, avg_cer, avg_wer)
-            plots_checkpoints.plot_progress(checkpoint, avg_loss, avg_cer, avg_wer)
-        return avg_wer, avg_loss
 
     def train_batch(self, epoch, i, data):
         inputs, targets, filenames, input_percentages, target_sizes = data
@@ -299,8 +395,8 @@ class Trainer:
         else:
             loss_value = loss.item()
         if loss_value == inf or loss_value == -inf:
-            print("WARNING: received an inf loss, setting loss value to 0")
-            loss_value = 0
+            print("WARNING: received an inf loss, setting loss value to 1000")
+            loss_value = 1000
 
         losses.update(loss_value, inputs.size(0))
 
@@ -319,32 +415,33 @@ class Trainer:
                   'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
                   'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
                   'Loss {loss.val:.2f} ({loss.avg:.2f})\t'.format(
-                args.gpu_rank or VISIBLE_DEVICES[0],
-                epoch + 1, i + 1, len(train_sampler),
-                batch_time=batch_time, data_time=data_time, loss=losses))
+                    args.gpu_rank or VISIBLE_DEVICES[0],
+                    epoch + 1, i + 1, len(train_sampler),
+                    batch_time=batch_time, data_time=data_time, loss=losses))
 
         del inputs, targets, input_percentages, input_sizes
         del out, output_sizes, target_sizes, loss
         return loss_value
 
 
-def train(from_epoch, from_iter):
-    print('Starting training with id="{}" at GPU="{}" with lr={}'.format(args.id, args.gpu_rank or VISIBLE_DEVICES[0], get_lr()))
+def train(from_epoch, from_iter, from_checkpoint):
+    print('Starting training with id="{}" at GPU="{}" with lr={}'.format(args.id, args.gpu_rank or VISIBLE_DEVICES[0],
+                                                                         get_lr()))
     trainer = Trainer()
     best_wer = None
+    checkpoint = from_checkpoint
     for epoch in range(from_epoch, args.epochs):
-        checkpoint = 0
         total_loss = 0
-        steps_passed = 1
+        num_losses = 1
         model.train()
         trainer.end = time.time()
         start_epoch_time = time.time()
 
         for i, data in enumerate(train_loader, start=from_iter):
-            steps_passed = i + 1 - from_iter
             if i >= len(train_sampler):
                 break
             total_loss += trainer.train_batch(epoch, i, data)
+            num_losses += 1
 
             if (i + 1) % 5 == 0:
                 # deal with GPU memory fragmentation
@@ -355,41 +452,66 @@ def train(from_epoch, from_iter):
                 if 0 < i < len(train_sampler) - 1 and (i + 1) % args.checkpoint_per_batch == 0:
                     file_path = '%s/checkpoint_epoch_%02d_iter_%05d.model' % (save_folder, epoch + 1, i + 1)
                     print("Saving checkpoint model to %s" % file_path)
-                    torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, iteration=i,
+                    torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch,
+                                                    iteration=i,
                                                     loss_results=plots.loss_results,
-                                                    wer_results=plots.wer_results, cer_results=plots.cer_results,
-                                                    avg_loss=total_loss / steps_passed), file_path)
+                                                    wer_results=plots.wer_results,
+                                                    cer_results=plots.cer_results,
+                                                    checkpoint=checkpoint,
+                                                    checkpoint_loss_results=checkpoint_plots.loss_results,
+                                                    checkpoint_wer_results=checkpoint_plots.wer_results,
+                                                    checkpoint_cer_results=checkpoint_plots.cer_results,
+                                                    avg_loss=total_loss / num_losses), file_path)
 
-                    trainer.check_model_quality(epoch, checkpoint, avg_loss=total_loss / steps_passed)
+                    check_model_quality(epoch, checkpoint)
                     checkpoint += 1
                     model.train()
+                    if args.checkpoint_anneal != 1:
+                        print("Checkpoint:", checkpoint)
+                        set_lr(get_lr() / args.checkpoint_anneal)
 
             trainer.end = time.time()
-
-        epoch_avg_loss = total_loss / steps_passed
 
         epoch_time = time.time() - start_epoch_time
 
         print('Training Summary Epoch: [{0}]\t'
               'Time taken (s): {epoch_time:.0f}\t'
-              'Average Loss {loss:.3f}\t'.format(epoch + 1, epoch_time=epoch_time, loss=epoch_avg_loss))
+              'Average Loss {loss:.3f}\t'.format(epoch + 1, epoch_time=epoch_time, loss=total_loss / num_losses))
 
         from_iter = 0  # Reset start iteration for next epoch
-        wer_avg = trainer.check_model_quality(epoch, checkpoint, epoch_avg_loss)
+        wer_avg = check_model_quality(epoch, checkpoint)
+        checkpoint += 1
 
-        if args.checkpoint and is_leader:
+        if args.checkpoint and is_leader:  # checkpoint after the end of each epoch
             file_path = '%s/deepspeech_%d.model' % (save_folder, epoch + 1)
-            torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, loss_results=plots.loss_results,
-                                            wer_results=plots.wer_results, cer_results=plots.cer_results), file_path)
+            torch.save(DeepSpeech.serialize(model,
+                                            optimizer=optimizer,
+                                            epoch=epoch,
+                                            loss_results=plots.loss_results,
+                                            wer_results=plots.wer_results,
+                                            cer_results=plots.cer_results,
+                                            checkpoint=checkpoint,
+                                            checkpoint_loss_results=checkpoint_plots.loss_results,
+                                            checkpoint_wer_results=checkpoint_plots.wer_results,
+                                            checkpoint_cer_results=checkpoint_plots.cer_results,
+                                            ), file_path)
             # anneal lr
-            new_lr = get_lr() / args.learning_anneal
-            set_lr(new_lr)
-            print('Learning rate annealed to: {lr:.6f}'.format(lr=new_lr))
+            print("Checkpoint:", checkpoint)
+            set_lr(get_lr() / args.learning_anneal)
 
         if (best_wer is None or best_wer > wer_avg) and is_leader:
             print("Found better validated model, saving to %s" % args.model_path)
-            torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch, loss_results=plots.loss_results,
-                                            wer_results=plots.wer_results, cer_results=plots.cer_results),
+            torch.save(DeepSpeech.serialize(model,
+                                            optimizer=optimizer,
+                                            epoch=epoch,
+                                            loss_results=plots.loss_results,
+                                            wer_results=plots.wer_results,
+                                            cer_results=plots.cer_results,
+                                            checkpoint=checkpoint,
+                                            checkpoint_loss_results=checkpoint_plots.loss_results,
+                                            checkpoint_wer_results=checkpoint_plots.wer_results,
+                                            checkpoint_cer_results=checkpoint_plots.cer_results,
+                                            ),
                        args.model_path)
             best_wer = wer_avg
 
@@ -415,10 +537,11 @@ if __name__ == '__main__':
     save_folder = args.save_folder
     os.makedirs(save_folder, exist_ok=True)
 
-    plots = PlotWindow(args.id, 'epochs')
-    plots_checkpoints = PlotWindow(args.id, 'checkpoints')
+    plots = PlotWindow(args.id, 'epochs', log_y=False)
+    checkpoint_plots = PlotWindow(args.id, 'checkpoint', log_y=False)
+    lr_plots = LRPlotWindow(args.id, 'LRFinder', log_x=True)
 
-    total_avg_loss, start_epoch, start_iter = 0, 0, 0
+    total_avg_loss, start_epoch, start_iter, start_checkpoint = 0, 0, 0, 0
     if args.continue_from:  # Starting from previous model
         print("Loading checkpoint model %s" % args.continue_from)
         package = torch.load(args.continue_from, map_location=lambda storage, loc: storage)
@@ -433,6 +556,7 @@ if __name__ == '__main__':
             set_lr(args.lr)
             start_epoch = int(package.get('epoch', 1)) - 1  # Index start at 0 for training
             start_iter = package.get('iteration', None)
+            start_checkpoint = package.get('checkpoint', 0) or 0
             if start_iter is None:
                 start_epoch += 1  # We saved model after epoch finished, start at the next epoch.
                 start_iter = 0
@@ -442,8 +566,14 @@ if __name__ == '__main__':
             plots.loss_results = package['loss_results']
             plots.cer_results = package['cer_results']
             plots.wer_results = package['wer_results']
+            if package.get('checkpoint_cer_results') is not None:
+                checkpoint_plots.loss_results = package.get('checkpoint_loss_results', torch.Tensor(10000))
+                checkpoint_plots.cer_results = package.get('checkpoint_cer_results', torch.Tensor(10000))
+                checkpoint_plots.wer_results = package.get('checkpoint_wer_results', torch.Tensor(10000))
             if package['loss_results'] is not None and start_epoch > 0:
-                plots.plot_history(start_epoch, total_avg_loss)
+                plots.plot_history(start_epoch)
+            if package.get('checkpoint_cer_results') is not None and start_checkpoint > 0:
+                checkpoint_plots.plot_history(start_checkpoint)
     else:
         with open(args.labels_path) as label_file:
             labels = str(''.join(json.load(label_file)))
@@ -511,4 +641,4 @@ if __name__ == '__main__':
     data_time = AverageMeter()
     losses = AverageMeter()
 
-    train(start_epoch, start_iter)
+    train(start_epoch, start_iter, start_checkpoint)

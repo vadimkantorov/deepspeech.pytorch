@@ -305,8 +305,9 @@ class DeepSpeech(nn.Module):
         return model
 
     @staticmethod
-    def serialize(model, optimizer=None, epoch=None, iteration=None, loss_results=None,
-                  cer_results=None, wer_results=None, avg_loss=None, meta=None):
+    def serialize(model, optimizer=None, epoch=None, iteration=None, loss_results=None, checkpoint=None,
+                  cer_results=None, wer_results=None, avg_loss=None, meta=None,
+                  checkpoint_cer_results=None, checkpoint_wer_results=None, checkpoint_loss_results=None):
         model = model.module if DeepSpeech.is_parallel(model) else model
         package = {
             'version': model._version,
@@ -327,10 +328,14 @@ class DeepSpeech(nn.Module):
             package['epoch'] = epoch + 1  # increment for readability
         if iteration is not None:
             package['iteration'] = iteration
+        package['checkpoint'] = checkpoint
         if loss_results is not None:
             package['loss_results'] = loss_results
             package['cer_results'] = cer_results
             package['wer_results'] = wer_results
+            package['checkpoint_cer_results'] = checkpoint_cer_results
+            package['checkpoint_wer_results'] = checkpoint_wer_results
+            package['checkpoint_loss_results'] = checkpoint_loss_results
         if meta is not None:
             package['meta'] = meta
         return package

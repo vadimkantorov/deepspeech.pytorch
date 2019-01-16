@@ -47,7 +47,7 @@ if __name__ == '__main__':
         decoder = None
     target_decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
     test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=args.test_manifest, labels=labels,
-                                      normalize=False)
+                                      normalize_by_frame=True)
     #import random;random.shuffle(test_dataset.ids)
 
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
@@ -66,6 +66,7 @@ if __name__ == '__main__':
             offset += size
 
         inputs = inputs.to(device)
+
         out, output_sizes = model(inputs, input_sizes)
 
         del inputs, targets, input_percentages, target_sizes
@@ -87,8 +88,8 @@ if __name__ == '__main__':
                 print("Wav:", filenames[x])
                 print("WER:", "{:.2f}".format(100 * wer / wer_ref), "CER:", "{:.2f}".format(100 * cer / cer_ref), "\n")
             elif args.errors:
-                if cer / cer_ref > 0.3:
-                    #print("FN:", )
+                if cer / cer_ref > 0.5:
+                    # print("FN:", )
                     print("Ref:", reference)
                     print("Hyp:", transcript)
                     print("Wav:", filenames[x])
@@ -99,9 +100,8 @@ if __name__ == '__main__':
             num_tokens += wer_ref
             num_chars += cer_ref
 
-
         del out, output_sizes
-        if (x+1) % 20 == 0:
+        if (i+1) % 5 == 0:
             gc.collect()
             torch.cuda.empty_cache()
 

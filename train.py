@@ -284,12 +284,12 @@ def set_lr(lr):
     optimizer.load_state_dict(optim_state)
 
 
-def check_model_quality(epoch, checkpoint):
+def check_model_quality(epoch, checkpoint, train_loss):
     gc.collect()
     torch.cuda.empty_cache()
 
-    total_cer, total_wer, total_loss = 0, 0, 0
-    num_tokens, num_chars, num_losses = 0, 0, 0
+    valid_cer, valid_wer, valid_loss = 0, 0, 0
+    num_chars, num_tokens, num_losses = 0, 0, 0
     model.eval()
     with torch.no_grad():
         for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
@@ -317,7 +317,9 @@ def check_model_quality(epoch, checkpoint):
             if loss_value == inf or loss_value == -inf:
                 print("WARNING: received an inf loss, setting loss value to 1000")
                 loss_value = 1000
-            total_loss += float(loss_value)
+            loss_value = float(loss_value)
+            valid_loss = (valid_loss * 0.998 + loss_value * 0.002)  # discount earlier losses
+            valid_loss += loss_value
             num_losses += 1
 
             decoded_output, _ = decoder.decode(out, output_sizes)
@@ -326,8 +328,8 @@ def check_model_quality(epoch, checkpoint):
                 transcript, reference = decoded_output[x][0], target_strings[x][0]
                 wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
 
-                total_wer += wer
-                total_cer += cer
+                valid_wer += wer
+                valid_cer += cer
                 num_tokens += wer_ref
                 num_chars += cer_ref
 
@@ -338,19 +340,19 @@ def check_model_quality(epoch, checkpoint):
             if args.cuda:
                 torch.cuda.synchronize()
 
-        avg_wer = 100 * total_wer / num_tokens
-        avg_cer = 100 * total_cer / num_chars
+        avg_wer = 100 * valid_wer / num_tokens
+        avg_cer = 100 * valid_cer / num_chars
         print('Validation Summary Epoch: [{0}]\t'
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(epoch + 1, wer=avg_wer, cer=avg_cer))
 
-        avg_loss = total_loss / num_losses
-        plots.loss_results[epoch] = avg_loss
+        avg_loss = valid_loss / num_losses
+        plots.loss_results[epoch] = train_loss
         plots.wer_results[epoch] = avg_wer
         plots.cer_results[epoch] = avg_cer
         plots.epochs[epoch] = epoch+1
 
-        checkpoint_plots.loss_results[checkpoint] = avg_loss
+        checkpoint_plots.loss_results[checkpoint] = train_loss
         checkpoint_plots.wer_results[checkpoint] = avg_wer
         checkpoint_plots.cer_results[checkpoint] = avg_cer
         checkpoint_plots.epochs[checkpoint] = checkpoint+1
@@ -358,7 +360,7 @@ def check_model_quality(epoch, checkpoint):
         plots.plot_progress(epoch, avg_loss, avg_cer, avg_wer)
         checkpoint_plots.plot_progress(checkpoint, avg_loss, avg_cer, avg_wer)
 
-        if args.checkpoint_anneal:
+        if args.checkpoint_anneal != 1.0:
             global lr_plots
             lr_plots.loss_results[checkpoint] = avg_loss
             lr_plots.epochs[checkpoint:] = get_lr()
@@ -385,7 +387,10 @@ class Trainer:
         assert output_sizes.is_cuda
         out = out.transpose(0, 1)  # TxNxH
 
-        out[torch.isnan(out)] = 0
+        if torch.isnan(out).any():  # and args.nan == 'zero':
+            # work around bad data
+            print("WARNING: Working around NaNs in data")
+            out[torch.isnan(out)] = 0
 
         loss = criterion(out, targets, output_sizes.cpu(), target_sizes)
         loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -400,6 +405,7 @@ class Trainer:
             print("WARNING: received an inf loss, setting loss value to 1000")
             loss_value = 1000
 
+        loss_value = float(loss_value)
         losses.update(loss_value, inputs.size(0))
 
         # compute gradient
@@ -407,9 +413,10 @@ class Trainer:
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+
         if torch.isnan(out).any():
             # work around bad data
-            print("Skipping NaN backward step")
+            print("WARNING: Skipping NaNs in backward step")
         else:
             # SGD step
             optimizer.step()
@@ -469,7 +476,7 @@ def train(from_epoch, from_iter, from_checkpoint):
                                                     checkpoint_cer_results=checkpoint_plots.cer_results,
                                                     avg_loss=total_loss / num_losses), file_path)
 
-                    check_model_quality(epoch, checkpoint)
+                    check_model_quality(epoch, checkpoint, total_loss / num_losses)
                     checkpoint += 1
                     model.train()
                     if args.checkpoint_anneal != 1:
@@ -485,7 +492,7 @@ def train(from_epoch, from_iter, from_checkpoint):
               'Average Loss {loss:.3f}\t'.format(epoch + 1, epoch_time=epoch_time, loss=total_loss / num_losses))
 
         from_iter = 0  # Reset start iteration for next epoch
-        wer_avg = check_model_quality(epoch, checkpoint)
+        wer_avg = check_model_quality(epoch, checkpoint, total_loss / num_losses)
         checkpoint += 1
 
         if args.checkpoint and is_leader:  # checkpoint after the end of each epoch
@@ -608,10 +615,10 @@ if __name__ == '__main__':
     decoder = GreedyDecoder(labels)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                        manifest_filepath=args.train_manifest,
-                                       labels=labels, normalize=False, augment=args.augment)
+                                       labels=labels, normalize_by_frame=True, augment=args.augment)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                       manifest_filepath=args.val_manifest,
-                                      labels=labels, normalize=False, augment=False)
+                                      labels=labels, normalize_by_frame=True, augment=False)
     if args.reverse_sort:
         # XXX: A hack to test max memory load.
         train_dataset.ids.reverse()

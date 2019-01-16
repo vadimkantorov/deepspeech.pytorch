@@ -1,6 +1,8 @@
 import argparse
 import warnings
 
+import scipy
+
 from opts import add_decoder_args, add_inference_args
 
 warnings.simplefilter('ignore')
@@ -58,9 +60,9 @@ def transcribe(audio_path, parser, model, decoder, device):
     spect = parser.parse_audio(audio_path).contiguous()
     spect = spect.view(1, 1, spect.size(0), spect.size(1))
     spect = spect.to(device)
-    input_sizes = torch.IntTensor([spect.size(3)]).int()
+    input_sizes = torch.IntTensor([spect.size(3)]).unsqueeze(0).int()
     out, output_sizes = model(spect, input_sizes)
-    decoded_output, decoded_offsets = decoder.decode(out, output_sizes)
+    decoded_output, decoded_offsets = decoder.decode(out, output_sizes[0])
     return decoded_output, decoded_offsets
 
 
@@ -83,7 +85,8 @@ if __name__ == '__main__':
     else:
         decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
 
-    parser = SpectrogramParser(audio_conf, normalize=False)
+    parser = SpectrogramParser(audio_conf, normalize=False, normalize_by_frame=True)
 
     decoded_output, decoded_offsets = transcribe(args.audio_path, parser, model, decoder, device)
-    print(json.dumps(decode_results(model, decoded_output, decoded_offsets), ensure_ascii=False))
+    results = decode_results(model, decoded_output, decoded_offsets)
+    print(json.dumps(results, ensure_ascii=False))

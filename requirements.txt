@@ -1,3 +1,4 @@
+scipy
 python-levenshtein
 torch
 visdom

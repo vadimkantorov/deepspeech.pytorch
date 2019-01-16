@@ -4,8 +4,8 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.parameter import Parameter
 from torch.autograd import Variable
+from torch.nn.parameter import Parameter
 
 supported_rnns = {
     'lstm': nn.LSTM,
@@ -103,7 +103,7 @@ class BatchRNN(nn.Module):
         x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
         if self.bidirectional:
             x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)  # (TxNxH*2) -> (TxNxH) by sum
-        #x = x.to('cuda')
+        # x = x.to('cuda')
         return x
 
 
@@ -196,13 +196,15 @@ class DeepSpeech(nn.Module):
         window_size = self._audio_conf.get("window_size", 0.02)
         num_classes = len(self._labels)
 
+        self.dropout1 = nn.Dropout(p=0.1, inplace=True)
+        self.dropout2 = nn.Dropout(p=0.1, inplace=True)
         self.conv = MaskConv(nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(20, 5)),
             nn.BatchNorm2d(32, momentum=bnm),
             nn.Hardtanh(0, 20, inplace=True),
             nn.Conv2d(32, 32, kernel_size=(21, 11), stride=(2, 1), padding=(10, 5)),
             nn.BatchNorm2d(32, momentum=bnm),
-            nn.Hardtanh(0, 20, inplace=True)
+            nn.Hardtanh(0, 20, inplace=True),
         ))
         # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
         rnn_input_size = int(math.floor((sample_rate * window_size + 1e-2) / 2) + 1)
@@ -238,9 +240,11 @@ class DeepSpeech(nn.Module):
         assert x.is_cuda
         lengths = lengths.cpu().int()
         output_lengths = self.get_seq_lens(lengths).cuda()
+        x = self.dropout1(x)
         x, _ = self.conv(x, output_lengths)
+        x = self.dropout2(x)
         assert x.is_cuda
-        #x = x.to('cuda')
+        # x = x.to('cuda')
 
         sizes = x.size()
         x = x.view(sizes[0], sizes[1] * sizes[2], sizes[3])  # Collapse feature dimension

@@ -537,8 +537,8 @@ if __name__ == '__main__':
     save_folder = args.save_folder
     os.makedirs(save_folder, exist_ok=True)
 
-    plots = PlotWindow(args.id, 'epochs', log_y=False)
-    checkpoint_plots = PlotWindow(args.id, 'checkpoint', log_y=False)
+    plots = PlotWindow(args.id, 'epochs', log_y=True)
+    checkpoint_plots = PlotWindow(args.id, 'checkpoint', log_y=True)
     lr_plots = LRPlotWindow(args.id, 'LRFinder', log_x=True)
 
     total_avg_loss, start_epoch, start_iter, start_checkpoint = 0, 0, 0, 0

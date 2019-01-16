@@ -37,7 +37,7 @@ parser.add_argument('--cuda', dest='cuda', action='store_true', help='Use cuda t
 parser.add_argument('--lr', '--learning-rate', default=3e-4, type=float, help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--batch-norm-momentum', default=0.1, type=float, help='BatchNorm momentum')
-parser.add_argument('--max-norm', default=400, type=int, help='Norm cutoff to prevent explosion of gradients')
+parser.add_argument('--max-norm', default=100, type=int, help='Norm cutoff to prevent explosion of gradients')
 parser.add_argument('--learning-anneal', default=1.1, type=float, help='Annealing applied to learning rate every epoch')
 parser.add_argument('--checkpoint-anneal', default=1.0, type=float,
                     help='Annealing applied to learning rate every checkpoint')
@@ -385,6 +385,8 @@ class Trainer:
         assert output_sizes.is_cuda
         out = out.transpose(0, 1)  # TxNxH
 
+        out[torch.isnan(out)] = 0
+
         loss = criterion(out, targets, output_sizes.cpu(), target_sizes)
         loss = loss / inputs.size(0)  # average the loss by minibatch
         loss = loss.to(device)
@@ -405,8 +407,12 @@ class Trainer:
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-        # SGD step
-        optimizer.step()
+        if torch.isnan(out).any():
+            # work around bad data
+            print("Skipping NaN backward step")
+        else:
+            # SGD step
+            optimizer.step()
 
         # measure elapsed time
         batch_time.update(time.time() - self.end)

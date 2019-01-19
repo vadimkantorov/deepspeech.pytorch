@@ -117,11 +117,13 @@ class SpectrogramParser(AudioParser):
         hop_length = int(self.sample_rate * (self.window_stride + 1e-8))
         # print(n_fft, win_length, hop_length)
         # STFT
+        y = y
         D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
         spect, phase = librosa.magphase(D)
         # S = log(S+1)
-        spect = np.log1p(spect)
+
+        spect = np.log1p(spect * 1048576)
         spect = torch.FloatTensor(spect)
         if self.normalize:
             mean = spect.mean()
@@ -129,10 +131,14 @@ class SpectrogramParser(AudioParser):
         if self.normalize_by_frame:
             mean = spect.mean(dim=0, keepdim=True)
             # std = spect.std(dim=0, keepdim=True)
-            mean = torch.FloatTensor(scipy.ndimage.filters.gaussian_filter1d(mean.numpy(), 50))
+            mean = torch.FloatTensor(scipy.ndimage.filters.gaussian_filter1d(mean.numpy(), 20))
+            max_mean = mean.mean()
             # std = torch.FloatTensor(scipy.ndimage.filters.gaussian_filter1d(std.numpy(), 20))
-            spect.add_(-mean)
+            spect.add_(-max_mean)
+            #print(spect.min(), spect.max(), spect.mean())
             # spect.div_(std + 1e-8)
+        if self.augment:
+            spect.add_(torch.rand(1) - 0.5)
         return spect
 
     def parse_transcript(self, transcript_path):
@@ -351,8 +357,8 @@ def augment_audio_with_sox(path, sample_rate, tempo, gain):
         return y
 
 
-def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.6, 1.6),
-                                  gain_range=(-6, 8)):
+def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.15),
+                                  gain_range=(-20, 10)):
     """
     Picks tempo and gain uniformly, applies it to the utterance by using sox utility.
     Returns the augmented utterance.

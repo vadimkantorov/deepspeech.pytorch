@@ -98,7 +98,7 @@ class BatchRNN(nn.Module):
         if self.batch_norm is not None:
             x = self.batch_norm(x)
             # x = x._replace(data=self.batch_norm(x.data))
-        x = nn.utils.rnn.pack_padded_sequence(x, output_lengths.data.squeeze(0).cpu().numpy())
+        x = nn.utils.rnn.pack_padded_sequence(x, output_lengths.data.cpu().numpy())
         x, h = self.rnn(x)
         x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
         if self.bidirectional:

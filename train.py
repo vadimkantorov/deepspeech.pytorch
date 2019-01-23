@@ -1,4 +1,5 @@
 import argparse
+import csv
 import datetime
 import json
 import os
@@ -22,6 +23,8 @@ parser.add_argument('--train-manifest', metavar='DIR',
                     help='path to train manifest csv', default='data/train_manifest.csv')
 parser.add_argument('--val-manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/val_manifest.csv')
+parser.add_argument('--curriculum', metavar='DIR',
+                    help='path to curriculum file', default='data/curriculum.csv')
 parser.add_argument('--sample-rate', default=16000, type=int, help='Sample rate')
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in data-loading')
@@ -284,12 +287,12 @@ def set_lr(lr):
     optimizer.load_state_dict(optim_state)
 
 
-def check_model_quality(epoch, checkpoint, train_loss):
+def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     gc.collect()
     torch.cuda.empty_cache()
 
-    valid_cer, valid_wer, valid_loss = 0, 0, 0
-    num_chars, num_tokens, num_losses = 0, 0, 0
+    val_cer_sum, val_wer_sum, valid_loss = 0, 0, 0
+    num_chars, num_words, num_losses = 0, 0, 0
     model.eval()
     with torch.no_grad():
         for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
@@ -328,9 +331,9 @@ def check_model_quality(epoch, checkpoint, train_loss):
                 transcript, reference = decoded_output[x][0], target_strings[x][0]
                 wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
 
-                valid_wer += wer
-                valid_cer += cer
-                num_tokens += wer_ref
+                val_wer_sum += wer
+                val_cer_sum += cer
+                num_words += wer_ref
                 num_chars += cer_ref
 
             del inputs, targets, input_percentages, target_sizes
@@ -340,40 +343,55 @@ def check_model_quality(epoch, checkpoint, train_loss):
             if args.cuda:
                 torch.cuda.synchronize()
 
-        avg_wer = 100 * valid_wer / num_tokens
-        avg_cer = 100 * valid_cer / num_chars
+        val_wer = 100 * val_wer_sum / num_words
+        val_cer = 100 * val_cer_sum / num_chars
         print('Validation Summary Epoch: [{0}]\t'
               'Average WER {wer:.3f}\t'
-              'Average CER {cer:.3f}\t'.format(epoch + 1, wer=avg_wer, cer=avg_cer))
+              'Average CER {cer:.3f}\t'.format(epoch + 1, wer=val_wer, cer=val_cer))
 
         avg_loss = valid_loss / num_losses
         plots.loss_results[epoch] = train_loss
-        plots.wer_results[epoch] = avg_wer
-        plots.cer_results[epoch] = avg_cer
-        plots.epochs[epoch] = epoch+1
+        plots.wer_results[epoch] = train_wer
+        plots.cer_results[epoch] = train_cer
+        plots.epochs[epoch] = epoch + 1
 
         checkpoint_plots.loss_results[checkpoint] = train_loss
-        checkpoint_plots.wer_results[checkpoint] = avg_wer
-        checkpoint_plots.cer_results[checkpoint] = avg_cer
-        checkpoint_plots.epochs[checkpoint] = checkpoint+1
+        checkpoint_plots.wer_results[checkpoint] = val_wer
+        checkpoint_plots.cer_results[checkpoint] = val_cer
+        checkpoint_plots.epochs[checkpoint] = checkpoint + 1
 
-        plots.plot_progress(epoch, avg_loss, avg_cer, avg_wer)
-        checkpoint_plots.plot_progress(checkpoint, avg_loss, avg_cer, avg_wer)
+        plots.plot_progress(epoch, train_loss, train_cer, train_wer)
+        checkpoint_plots.plot_progress(checkpoint, avg_loss, val_cer, val_wer)
 
         if args.checkpoint_anneal != 1.0:
             global lr_plots
             lr_plots.loss_results[checkpoint] = avg_loss
             lr_plots.epochs[checkpoint:] = get_lr()
-            lr_plots.plot_progress(checkpoint, avg_loss, avg_cer, avg_wer)
-    return avg_wer, avg_loss
+            lr_plots.plot_progress(checkpoint, avg_loss, val_cer, val_wer)
+    return val_wer, val_cer
 
-# 7e-6 .. 5e-5 = safe LR
 
 class Trainer:
     def __init__(self):
         self.end = time.time()
+        self.train_wer = 0
+        self.train_cer = 0
+        self.num_words = 0
+        self.num_chars = 0
 
-    def train_batch(self, epoch, i, data):
+    def reset_scores(self):
+        self.train_wer = 0
+        self.train_cer = 0
+        self.num_words = 0
+        self.num_chars = 0
+
+    def get_cer(self):
+        return 100. * self.train_cer / self.num_chars
+
+    def get_wer(self):
+        return 100. * self.train_wer / self.num_words
+
+    def train_batch(self, epoch, batch_id, data):
         inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
         # measure data loading time
@@ -385,6 +403,25 @@ class Trainer:
         out, output_sizes = model(inputs, input_sizes)
         assert out.is_cuda
         assert output_sizes.is_cuda
+
+        split_targets = []
+        offset = 0
+        for size in target_sizes:
+            split_targets.append(targets[offset:offset + size])
+            offset += size
+
+        decoded_output, _ = decoder.decode(out, output_sizes)
+        target_strings = decoder.convert_to_strings(split_targets)
+        for x in range(len(target_strings)):
+            transcript, reference = decoded_output[x][0], target_strings[x][0]
+            wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
+            train_dataset.update_curriculum(filenames[x], reference, transcript, None, cer / cer_ref, wer / wer_ref)
+
+            self.train_wer += wer
+            self.train_cer += cer
+            self.num_words += wer_ref
+            self.num_chars += cer_ref
+
         out = out.transpose(0, 1)  # TxNxH
 
         if torch.isnan(out).any():  # and args.nan == 'zero':
@@ -408,6 +445,8 @@ class Trainer:
         loss_value = float(loss_value)
         losses.update(loss_value, inputs.size(0))
 
+        # update_curriculum
+
         # compute gradient
         optimizer.zero_grad()
         loss.backward()
@@ -428,22 +467,43 @@ class Trainer:
                   'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
                   'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
                   'Loss {loss.val:.2f} ({loss.avg:.2f})\t'.format(
-                    args.gpu_rank or VISIBLE_DEVICES[0],
-                    epoch + 1, i + 1, len(train_sampler),
-                    batch_time=batch_time, data_time=data_time, loss=losses))
+                args.gpu_rank or VISIBLE_DEVICES[0],
+                epoch + 1, batch_id + 1, len(train_sampler),
+                batch_time=batch_time, data_time=data_time, loss=losses))
 
         del inputs, targets, input_percentages, input_sizes
         del out, output_sizes, target_sizes, loss
         return loss_value
 
 
+def init_train_set(epoch):
+    train_dataset.set_curriculum_epoch(epoch, sample=True)
+    global train_loader, train_sampler
+    if not args.distributed:
+        train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
+    else:
+        train_sampler = DistributedBucketingSampler(train_dataset,
+                                                    batch_size=args.batch_size,
+                                                    num_replicas=args.world_size,
+                                                    rank=args.rank)
+    train_loader = AudioDataLoader(train_dataset,
+                                   num_workers=args.num_workers,
+                                   batch_sampler=train_sampler)
+    if (not args.no_shuffle and epoch != 0) or args.no_sorta_grad:
+        print("Shuffling batches for the following epochs")
+        train_sampler.shuffle(epoch)
+
+
 def train(from_epoch, from_iter, from_checkpoint):
     print('Starting training with id="{}" at GPU="{}" with lr={}'.format(args.id, args.gpu_rank or VISIBLE_DEVICES[0],
                                                                          get_lr()))
+
     trainer = Trainer()
-    best_wer = None
     checkpoint = from_checkpoint
+    best_score = None
     for epoch in range(from_epoch, args.epochs):
+        init_train_set(epoch)
+        trainer.reset_scores()
         total_loss = 0
         num_losses = 1
         model.train()
@@ -475,8 +535,9 @@ def train(from_epoch, from_iter, from_checkpoint):
                                                     checkpoint_wer_results=checkpoint_plots.wer_results,
                                                     checkpoint_cer_results=checkpoint_plots.cer_results,
                                                     avg_loss=total_loss / num_losses), file_path)
+                    train_dataset.save_curriculum(file_path + '.csv')
 
-                    check_model_quality(epoch, checkpoint, total_loss / num_losses)
+                    check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
                     checkpoint += 1
                     model.train()
                     if args.checkpoint_anneal != 1:
@@ -492,7 +553,8 @@ def train(from_epoch, from_iter, from_checkpoint):
               'Average Loss {loss:.3f}\t'.format(epoch + 1, epoch_time=epoch_time, loss=total_loss / num_losses))
 
         from_iter = 0  # Reset start iteration for next epoch
-        wer_avg = check_model_quality(epoch, checkpoint, total_loss / num_losses)
+        wer_avg, cer_avg = check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
+        new_score = wer_avg + cer_avg
         checkpoint += 1
 
         if args.checkpoint and is_leader:  # checkpoint after the end of each epoch
@@ -508,11 +570,13 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             checkpoint_wer_results=checkpoint_plots.wer_results,
                                             checkpoint_cer_results=checkpoint_plots.cer_results,
                                             ), file_path)
+            train_dataset.save_curriculum(file_path + '.csv')
+
             # anneal lr
             print("Checkpoint:", checkpoint)
             set_lr(get_lr() / args.learning_anneal)
 
-        if (best_wer is None or best_wer > wer_avg) and is_leader:
+        if (best_score is None or new_score < best_score) and is_leader:
             print("Found better validated model, saving to %s" % args.model_path)
             torch.save(DeepSpeech.serialize(model,
                                             optimizer=optimizer,
@@ -526,11 +590,8 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             checkpoint_cer_results=checkpoint_plots.cer_results,
                                             ),
                        args.model_path)
-            best_wer = wer_avg
-
-        if not args.no_shuffle:
-            print("Shuffling batches...")
-            train_sampler.shuffle(epoch)
+            train_dataset.save_curriculum(args.model_path + '.csv')
+            best_score = new_score
 
 
 if __name__ == '__main__':
@@ -615,31 +676,17 @@ if __name__ == '__main__':
     decoder = GreedyDecoder(labels)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                        manifest_filepath=args.train_manifest,
-                                       labels=labels, normalize_by_frame=True, augment=args.augment)
+                                       labels=labels, normalize='max_frame', augment=args.augment)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                       manifest_filepath=args.val_manifest,
-                                      labels=labels, normalize_by_frame=True, augment=False)
+                                      labels=labels, normalize='max_frame', augment=False)
     if args.reverse_sort:
         # XXX: A hack to test max memory load.
         train_dataset.ids.reverse()
 
-    if not args.distributed:
-        train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
-    else:
-        train_sampler = DistributedBucketingSampler(train_dataset,
-                                                    batch_size=args.batch_size,
-                                                    num_replicas=args.world_size,
-                                                    rank=args.rank)
-    train_loader = AudioDataLoader(train_dataset,
-                                   num_workers=args.num_workers,
-                                   batch_sampler=train_sampler)
     test_loader = AudioDataLoader(test_dataset,
                                   batch_size=args.batch_size,
                                   num_workers=args.num_workers)
-
-    if (not args.no_shuffle and start_epoch != 0) or args.no_sorta_grad:
-        print("Shuffling batches for the following epochs")
-        train_sampler.shuffle(start_epoch)
 
     model = model.to(device)
     if args.distributed:

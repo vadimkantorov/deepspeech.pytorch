@@ -59,7 +59,7 @@ if __name__ == '__main__':
     test_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                       manifest_filepath=args.test_manifest,
                                       labels=labels,
-                                      normalize_by_frame=True)
+                                      normalize='max_frame')
     # import random;random.shuffle(test_dataset.ids)
 
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
@@ -79,6 +79,7 @@ if __name__ == '__main__':
 
         inputs = inputs.to(device)
 
+        # print(inputs.shape, inputs.is_cuda, input_sizes.shape, input_sizes.is_cuda)
         out, output_sizes = model(inputs, input_sizes)
 
         del inputs, targets, input_percentages, target_sizes

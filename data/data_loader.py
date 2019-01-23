@@ -1,34 +1,37 @@
+import csv
+import math
 import os
 import subprocess
 from tempfile import NamedTemporaryFile
 
-from torch.distributed import get_rank
-from torch.distributed import get_world_size
-from torch.utils.data.sampler import Sampler
-
 import librosa
 import numpy as np
-import scipy.signal
 import scipy.ndimage
+import scipy.signal
 import torch
 import torchaudio
-import math
+from torch.distributed import get_rank
+from torch.distributed import get_world_size
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
-import csv
+from torch.utils.data.sampler import Sampler
+
+from data.curriculum import Curriculum
 
 windows = {'hamming': scipy.signal.hamming, 'hann': scipy.signal.hann, 'blackman': scipy.signal.blackman,
            'bartlett': scipy.signal.bartlett}
 
 
-def load_audio(path):
+def load_audio(path, channel=-1):
     sound, _ = torchaudio.load(path, normalization=True)
     sound = sound.numpy().T
     if len(sound.shape) > 1:
         if sound.shape[1] == 1:
             sound = sound.squeeze()
-        else:
+        elif channel == -1:
             sound = sound.mean(axis=1)  # multiple channels, average
+        else:
+            sound = sound[:, channel]  # multiple channels, average
     return sound
 
 
@@ -83,7 +86,7 @@ class NoiseInjection(object):
 
 
 class SpectrogramParser(AudioParser):
-    def __init__(self, audio_conf, normalize=False, augment=False, normalize_by_frame=False):
+    def __init__(self, audio_conf, normalize=False, augment=False):
         """
         Parses audio file into spectrogram with optional normalization and various augmentations
         :param audio_conf: Dictionary containing the sample rate, window and the window length/stride in seconds
@@ -96,7 +99,6 @@ class SpectrogramParser(AudioParser):
         self.sample_rate = audio_conf['sample_rate']
         self.window = windows.get(audio_conf['window'], windows['hamming'])
         self.normalize = normalize
-        self.normalize_by_frame = normalize_by_frame
         self.augment = augment
         self.noiseInjector = NoiseInjection(audio_conf['noise_dir'], self.sample_rate,
                                             audio_conf['noise_levels']) if audio_conf.get(
@@ -112,33 +114,66 @@ class SpectrogramParser(AudioParser):
             add_noise = np.random.binomial(1, self.noise_prob)
             if add_noise:
                 y = self.noiseInjector.inject_noise(y)
+
+        spect = self.audio_to_stft(y)
+        spect = self.normalize_audio(spect)
+        return spect
+
+    def parse_audio_for_transcription(self, audio_path, channel):
+        #y = load_audio(audio_path, channel=channel)
+        y = load_randomly_augmented_audio(audio_path, tempo_range=(0.5, 0.5), gain_range=(-5,-5))
+        spect = self.audio_to_stft(y)
+        #print(spect.shape, spect.shape[1] / 50)
+        spect = spect[:, :1000].copy()
+        spect = self.normalize_audio(spect)
+        #spect.add_(-2)
+        return spect
+
+    def audio_to_stft(self, y):
         n_fft = int(self.sample_rate * (self.window_size + 1e-8))
         win_length = n_fft
         hop_length = int(self.sample_rate * (self.window_stride + 1e-8))
         # print(n_fft, win_length, hop_length)
         # STFT
-        y = y
         D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
         spect, phase = librosa.magphase(D)
-        # S = log(S+1)
+        return spect
 
-        spect = np.log1p(spect * 1048576)
-        spect = torch.FloatTensor(spect)
-        if self.normalize:
+    def normalize_audio(self, spect):
+        # S = log(S+1)
+        if self.normalize == 'norm':
+            spect = np.log1p(spect)
+            spect = torch.FloatTensor(spect)
             mean = spect.mean()
             spect.add_(-mean)
-        if self.normalize_by_frame:
+        elif self.normalize == 'frame':
+            spect = np.log1p(spect)
+            spect = torch.FloatTensor(spect)
+            mean = spect.mean(dim=0, keepdim=True)
+            # std = spect.std(dim=0, keepdim=True)
+            mean = torch.FloatTensor(scipy.ndimage.filters.gaussian_filter1d(mean.numpy(), 50))
+            # std = torch.FloatTensor(scipy.ndimage.filters.gaussian_filter1d(std.numpy(), 20))
+            spect.add_(-mean.mean())
+            # spect.div_(std.mean() + 1e-8)
+        elif self.normalize == 'max_frame':
+            spect = np.log1p(spect * 1048576)
+            spect = torch.FloatTensor(spect)
             mean = spect.mean(dim=0, keepdim=True)
             # std = spect.std(dim=0, keepdim=True)
             mean = torch.FloatTensor(scipy.ndimage.filters.gaussian_filter1d(mean.numpy(), 20))
             max_mean = mean.mean()
             # std = torch.FloatTensor(scipy.ndimage.filters.gaussian_filter1d(std.numpy(), 20))
             spect.add_(-max_mean)
-            #print(spect.min(), spect.max(), spect.mean())
+            # print(spect.min(), spect.max(), spect.mean())
             # spect.div_(std + 1e-8)
-        if self.augment:
-            spect.add_(torch.rand(1) - 0.5)
+            if self.augment:
+                spect.add_(torch.rand(1) - 0.5)
+        elif not self.normalize:
+            spect = np.log1p(spect)
+            spect = torch.FloatTensor(spect)
+        else:
+            raise Exception("No such normalization")
         return spect
 
     def parse_transcript(self, transcript_path):
@@ -147,12 +182,15 @@ class SpectrogramParser(AudioParser):
 
 class SpectrogramDataset(Dataset, SpectrogramParser):
     def __init__(self, audio_conf, manifest_filepath, labels, normalize=False, augment=False,
-                 normalize_by_frame=False, max_items=None):
+                 max_items=None, curriculum_filepath=None):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
 
-        /path/to/audio.wav,/path/to/audio.txt
+        /path/to/audio.wav,/path/to/audio.txt,3.5
+
+        Curriculum file format (if used):
+        wav,transcript,reference,offsets,cer,wer
         ...
 
         :param audio_conf: Dictionary containing the sample rate, window and the window length/stride in seconds
@@ -160,37 +198,83 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         :param labels: String containing all the possible characters to map to
         :param normalize: Apply standard mean and deviation normalization to audio tensor
         :param augment(default False):  Apply random tempo and gain perturbations
+        :param curriculum_filepath: Path to curriculum csv as describe above
         """
         with open(manifest_filepath, newline='') as f:
-            spamreader = csv.reader(f)
-            ids = [row for row in spamreader]
+            reader = csv.reader(f)
+            ids = [(row[0], row[1], row[2] if len(row) > 2 else 0) for row in reader]
         if max_items:
             ids = ids[:max_items]
         print("Found entries:", len(ids))
+        # self.all_ids = ids
+        self.curriculum = None
+        self.all_ids = ids
         self.ids = ids
-        self.size = len(ids)
+        self.size = len(self.ids)
         self.labels = labels
         self.labels_map = dict([(labels[i], i) for i in range(len(labels))])
-        super(SpectrogramDataset, self).__init__(audio_conf, normalize, augment, normalize_by_frame)
+        if curriculum_filepath:
+            with open(curriculum_filepath, newline='') as f:
+                reader = csv.DictReader(f)
+                self.curriculum = {row['wav']: row for row in reader}
+        else:
+            self.curriculum = {wav: {'wav': wav,
+                                     'text': self.get_reference_transcript(txt),
+                                     'transcript': '',
+                                     'offsets': None,
+                                     'cer': 1,
+                                     'wer': 1} for wav, txt, dur in ids}
+        super(SpectrogramDataset, self).__init__(audio_conf, normalize, augment)
 
     def __getitem__(self, index):
         sample = self.ids[index]
-        audio_path, transcript_path = sample[0], sample[1]
+        audio_path, transcript_path, dur = sample[0], sample[1], sample[2]
         spect = self.parse_audio(audio_path)
-        transcript = self.parse_transcript(transcript_path)
-        return spect, transcript, audio_path
+        reference = self.parse_transcript(transcript_path)
+        return spect, reference, audio_path
+
+    def get_curriculum_info(self, item):
+        audio_path, transcript_path, _dur = item
+        return self.curriculum[audio_path]['text'], self.curriculum[audio_path]['cer']
+
+    def set_curriculum_epoch(self, epoch, sample=False):
+        if sample:
+            self.ids = list(
+                Curriculum.sample(self.all_ids, self.get_curriculum_info, epoch=epoch, min=len(self.all_ids) / 2))
+        else:
+            self.ids = self.all_ids.copy()
+        np.random.seed(epoch)
+        np.random.shuffle(self.ids)
+        self.size = len(self.ids)
+
+    def update_curriculum(self, audio_path, reference, transcript, offsets, cer, wer):
+        self.curriculum[audio_path] = {
+            'wav': audio_path,
+            'text': reference,
+            'transcript': transcript,
+            'offsets': offsets,
+            'cer': cer,
+            'wer': wer
+        }
+
+    def save_curriculum(self, fn):
+        with open(fn, 'w') as f:
+            writer = csv.DictWriter(f, ['wav', 'text', 'transcript', 'offsets', 'cer', 'wer'])
+            writer.writeheader()
+            for cl in self.curriculum.values():
+                writer.writerow(cl)
 
     DIGITS = {
-        '0': 'ноль*',
-        '1': 'один*',
-        '2': 'два*',
-        '3': 'три*',
-        '4': 'четыре*',
-        '5': 'пять*',
-        '6': 'шесть*',
-        '7': 'семь*',
-        '8': 'восемь*',
-        '9': 'девять*',
+        '0': 'НОЛЬ*',
+        '1': 'ОДИН*',
+        '2': 'ДВА*',
+        '3': 'ТРИ*',
+        '4': 'ЧЕТЫРЕ*',
+        '5': 'ПЯТЬ*',
+        '6': 'ШЕСТЬ*',
+        '7': 'СЕМЬ*',
+        '8': 'ВОСЕМЬ*',
+        '9': 'ДЕВЯТЬ*',
     }
 
     def getch(self, c):
@@ -222,6 +306,9 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
 
     def __len__(self):
         return self.size
+
+    def get_reference_transcript(self, txt):
+        return ''.join([self.labels[i] for i in self.parse_transcript(txt)])
 
 
 def _collate_fn(batch):
@@ -357,8 +444,8 @@ def augment_audio_with_sox(path, sample_rate, tempo, gain):
         return y
 
 
-def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.15),
-                                  gain_range=(-20, 10)):
+def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.9, 1.1),
+                                  gain_range=(-10, 10)):
     """
     Picks tempo and gain uniformly, applies it to the utterance by using sox utility.
     Returns the augmented utterance.

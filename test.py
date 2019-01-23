@@ -22,6 +22,8 @@ parser.add_argument('--num-workers', default=4, type=int, help='Number of worker
 parser.add_argument('--verbose', action="store_true", help="print out decoded output and error of each sample")
 parser.add_argument('--errors', action="store_true", help="print error report")
 parser.add_argument('--best', action="store_true", help="print best results")
+parser.add_argument('--norm', default='max_frame', action="store",
+                    help='Normalize sounds. Choices: "mean", "frame", "max_frame", "none"')
 parser.add_argument('--report-file', metavar='DIR', default='data/test_report.csv', help="Filename to save results")
 no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration options for when no decoder is "
                                                                   "specified")
@@ -59,7 +61,7 @@ if __name__ == '__main__':
     test_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                       manifest_filepath=args.test_manifest,
                                       labels=labels,
-                                      normalize='max_frame')
+                                      normalize=args.norm)
     # import random;random.shuffle(test_dataset.ids)
 
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,

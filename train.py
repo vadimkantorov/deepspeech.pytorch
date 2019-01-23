@@ -54,6 +54,8 @@ parser.add_argument('--log-params', dest='log_params', action='store_true', help
 parser.add_argument('--id', default='Deepspeech training', help='Identifier for visdom/tensorboard run')
 parser.add_argument('--save-folder', default='models/', help='Location to save epoch models')
 parser.add_argument('--continue-from', default='', help='Continue from checkpoint model')
+parser.add_argument('--norm', default='max_frame', action="store",
+                    help='Normalize sounds. Choices: "mean", "frame", "max_frame", "none"')
 parser.add_argument('--finetune', dest='finetune', action='store_true',
                     help='Finetune the model from checkpoint "continue_from"')
 parser.add_argument('--augment', dest='augment', action='store_true', help='Use random tempo and gain perturbations.')
@@ -676,10 +678,10 @@ if __name__ == '__main__':
     decoder = GreedyDecoder(labels)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                        manifest_filepath=args.train_manifest,
-                                       labels=labels, normalize='max_frame', augment=args.augment)
+                                       labels=labels, normalize=args.norm, augment=args.augment)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                       manifest_filepath=args.val_manifest,
-                                      labels=labels, normalize='max_frame', augment=False)
+                                      labels=labels, normalize=args.norm, augment=False)
     if args.reverse_sort:
         # XXX: A hack to test max memory load.
         train_dataset.ids.reverse()

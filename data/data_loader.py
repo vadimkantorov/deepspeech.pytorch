@@ -142,7 +142,7 @@ class SpectrogramParser(AudioParser):
 
     def normalize_audio(self, spect):
         # S = log(S+1)
-        if self.normalize == 'norm':
+        if self.normalize == 'mean':
             spect = np.log1p(spect)
             spect = torch.FloatTensor(spect)
             mean = spect.mean()
@@ -169,7 +169,7 @@ class SpectrogramParser(AudioParser):
             # spect.div_(std + 1e-8)
             if self.augment:
                 spect.add_(torch.rand(1) - 0.5)
-        elif not self.normalize:
+        elif not self.normalize or self.normalize == 'none':
             spect = np.log1p(spect)
             spect = torch.FloatTensor(spect)
         else:

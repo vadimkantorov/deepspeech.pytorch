@@ -59,7 +59,7 @@ def decode_results(model, decoded_output, decoded_offsets):
 
 
 def transcribe(audio_path, parser, model, decoder, device):
-    spect = parser.parse_audio_for_transcription(audio_path, channel=args.channel).contiguous()
+    spect = parser.parse_audio_for_transcription(audio_path).contiguous()
     spect = spect.view(1, 1, spect.size(0), spect.size(1))
     spect = spect.to(device)
     input_sizes = torch.IntTensor([spect.size(3)]).int()

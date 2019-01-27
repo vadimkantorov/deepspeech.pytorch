@@ -1,7 +1,9 @@
 import csv
 import math
 import os
+import random
 import subprocess
+from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import librosa
@@ -85,6 +87,13 @@ class NoiseInjection(object):
         return data
 
 
+TEMPOS = {
+    0: ('1.0', (1.0, 1.0)),
+    1: ('0.9', (0.85, 0.999)),
+    2: ('1.1', (1.001, 1.15))
+}
+
+
 class SpectrogramParser(AudioParser):
     def __init__(self, audio_conf, normalize=False, augment=False, channel=-1):
         """
@@ -108,29 +117,38 @@ class SpectrogramParser(AudioParser):
 
     def parse_audio(self, audio_path):
         if self.augment:
-            y = load_randomly_augmented_audio(audio_path, self.sample_rate, channel=self.channel)
+            tempo_name, tempo = TEMPOS[random.randrange(3)]
         else:
-            y = load_audio(audio_path, channel=self.channel)
-        if self.noiseInjector:
-            add_noise = np.random.binomial(1, self.noise_prob)
-            if add_noise:
-                y = self.noiseInjector.inject_noise(y)
+            tempo_name, tempo = TEMPOS[0]
+        chan = 'avg' if self.channel == -1 else str(self.channel)
+        cache_fn = audio_path + '-' + tempo_name + '-' + chan + '.npy'
+        if os.path.exists(cache_fn):
+            #print("Loading", cache_fn)
+            spect = np.load(cache_fn).item()['spect']
+        else:
+            if self.augment:
+                y = load_randomly_augmented_audio(audio_path, self.sample_rate, channel=self.channel)
+            else:
+                y = load_audio(audio_path, channel=self.channel)
+            if self.noiseInjector:
+                add_noise = np.random.binomial(1, self.noise_prob)
+                if add_noise:
+                    y = self.noiseInjector.inject_noise(y)
 
-        spect = self.audio_to_stft(y)
-        spect = self.normalize_audio(spect)
+            spect = self.audio_to_stft(y)
+            spect = self.normalize_audio(spect)
+            try:
+                np.save(cache_fn, {'spect': spect})
+            except KeyboardInterrupt:
+                os.unlink(cache_fn)
+            #print("Saved to", cache_fn)
+
+        if self.augment and self.normalize == 'max_frame':
+            spect.add_(torch.rand(1) - 0.5)
         return spect
 
-    def parse_audio_for_transcription(self, audio_path, channel):
-        # y = load_audio(audio_path, channel=channel)
-        y = load_randomly_augmented_audio(audio_path, tempo_range=(1, 1), gain_range=(-10, -10), channel=self.channel)
-        spect = self.audio_to_stft(y)
-        # print(spect.shape, spect.shape[1] / 50)
-        # print(spect.shape)
-        # spect = spect[:, :1200].copy()
-        # print(spect.shape)
-        spect = self.normalize_audio(spect)
-        # spect.add_(-2)
-        return spect
+    def parse_audio_for_transcription(self, audio_path):
+        return self.parse_audio(audio_path)
 
     def audio_to_stft(self, y):
         n_fft = int(self.sample_rate * (self.window_size + 1e-8))
@@ -177,8 +195,6 @@ class SpectrogramParser(AudioParser):
             spect.add_(-max_mean)
             # print(spect.min(), spect.max(), spect.mean())
             # spect.div_(std + 1e-8)
-            if self.augment:
-                spect.add_(torch.rand(1) - 0.5)
         elif not self.normalize or self.normalize == 'none':
             spect = np.log1p(spect)
             spect = torch.FloatTensor(spect)
@@ -215,7 +231,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             ids = [(row[0], row[1], row[2] if len(row) > 2 else 0) for row in reader]
         if max_items:
             ids = ids[:max_items]
-        #print("Found entries:", len(ids))
+        # print("Found entries:", len(ids))
         # self.all_ids = ids
         self.curriculum = None
         self.all_ids = ids

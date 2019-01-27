@@ -192,8 +192,7 @@ class DeepSpeech(nn.Module):
         window_size = self._audio_conf.get("window_size", 0.02)
         num_classes = len(self._labels)
 
-        self.dropout1 = nn.Dropout(p=0.5, inplace=True)
-        self.dropout2 = nn.Dropout(p=0.5, inplace=True)
+        self.dropout1 = nn.Dropout(p=0.1, inplace=True)
         self.conv = MaskConv(nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(20, 5)),
             nn.BatchNorm2d(32, momentum=bnm),
@@ -209,7 +208,7 @@ class DeepSpeech(nn.Module):
                                  kernel_size=kernel_size, padding=padding, stride=stride, bias=bias)]
 
                 if bnorm:
-                    res.append(nn.BatchNorm1d(out_channels))
+                    res.append(nn.BatchNorm1d(out_channels, momentum=bnm))
                 res.append(nn.ReLU(inplace=True))
                 return res
 
@@ -224,8 +223,7 @@ class DeepSpeech(nn.Module):
                 *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
                 *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
                 *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=256, out_channels=size, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=256, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm),
                 *_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm),
             )
             self.fc = nn.Sequential(

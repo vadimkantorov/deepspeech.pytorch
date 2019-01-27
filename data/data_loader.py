@@ -150,6 +150,13 @@ class SpectrogramParser(AudioParser):
             spect = torch.FloatTensor(spect)
             mean = spect.mean()
             spect.add_(-mean)
+        elif self.normalize == 'norm':
+            spect = np.log1p(spect)
+            spect = torch.FloatTensor(spect)
+            mean = spect.mean()
+            spect.add_(-mean)
+            std = spect.std(dim=0, keepdim=True)
+            spect.div_(std.mean())
         elif self.normalize == 'frame':
             spect = np.log1p(spect)
             spect = torch.FloatTensor(spect)

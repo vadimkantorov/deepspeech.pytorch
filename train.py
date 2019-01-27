@@ -24,7 +24,7 @@ parser.add_argument('--train-manifest', metavar='DIR',
 parser.add_argument('--val-manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/val_manifest.csv')
 parser.add_argument('--curriculum', metavar='DIR',
-                    help='path to curriculum file', default='data/curriculum.csv')
+                    help='path to curriculum file', default='')
 parser.add_argument('--sample-rate', default=16000, type=int, help='Sample rate')
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in data-loading')
@@ -293,7 +293,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     gc.collect()
     torch.cuda.empty_cache()
 
-    val_cer_sum, val_wer_sum, valid_loss = 0, 0, 0
+    val_cer_sum, val_wer_sum, val_loss_sum = 0, 0, 0
     num_chars, num_words, num_losses = 0, 0, 0
     model.eval()
     with torch.no_grad():
@@ -310,7 +310,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
 
             inputs = inputs.to(device)
 
-            out, output_sizes = model(inputs, input_sizes)
+            out, outs, output_sizes = model(inputs, input_sizes)
 
             loss = criterion(out.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -323,8 +323,8 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 print("WARNING: received an inf loss, setting loss value to 1000")
                 loss_value = 1000
             loss_value = float(loss_value)
-            valid_loss = (valid_loss * 0.998 + loss_value * 0.002)  # discount earlier losses
-            valid_loss += loss_value
+            val_loss_sum = (val_loss_sum * 0.998 + loss_value * 0.002)  # discount earlier losses
+            val_loss_sum += loss_value
             num_losses += 1
 
             decoded_output, _ = decoder.decode(out, output_sizes)
@@ -339,7 +339,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 num_chars += cer_ref
 
             del inputs, targets, input_percentages, target_sizes
-            del out, output_sizes, input_sizes
+            del out, outs, output_sizes, input_sizes
             del split_targets, loss
 
             if args.cuda:
@@ -351,25 +351,28 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(epoch + 1, wer=val_wer, cer=val_cer))
 
-        avg_loss = valid_loss / num_losses
+        val_loss = val_loss_sum / num_losses
         plots.loss_results[epoch] = train_loss
         plots.wer_results[epoch] = train_wer
         plots.cer_results[epoch] = train_cer
         plots.epochs[epoch] = epoch + 1
 
-        checkpoint_plots.loss_results[checkpoint] = train_loss
+        checkpoint_plots.loss_results[checkpoint] = val_loss
         checkpoint_plots.wer_results[checkpoint] = val_wer
         checkpoint_plots.cer_results[checkpoint] = val_cer
         checkpoint_plots.epochs[checkpoint] = checkpoint + 1
 
         plots.plot_progress(epoch, train_loss, train_cer, train_wer)
-        checkpoint_plots.plot_progress(checkpoint, avg_loss, val_cer, val_wer)
+        checkpoint_plots.plot_progress(checkpoint, val_loss, val_cer, val_wer)
 
         if args.checkpoint_anneal != 1.0:
             global lr_plots
-            lr_plots.loss_results[checkpoint] = avg_loss
-            lr_plots.epochs[checkpoint:] = get_lr()
-            lr_plots.plot_progress(checkpoint, avg_loss, val_cer, val_wer)
+            lr_plots.loss_results[checkpoint] = val_loss
+            lr_plots.epochs[checkpoint] = get_lr()
+            zero_loss = lr_plots.loss_results == 0
+            lr_plots.loss_results[zero_loss] = val_loss
+            lr_plots.epochs[zero_loss] = get_lr()
+            lr_plots.plot_progress(checkpoint, val_loss, val_cer, val_wer)
     return val_wer, val_cer
 
 
@@ -402,8 +405,9 @@ class Trainer:
         inputs = inputs.to(device)
         input_sizes = input_sizes.to(device)
 
-        out, output_sizes = model(inputs, input_sizes)
+        out, outs, output_sizes = model(inputs, input_sizes)
         assert out.is_cuda
+        assert outs.is_cuda
         assert output_sizes.is_cuda
 
         split_targets = []
@@ -474,7 +478,7 @@ class Trainer:
                 batch_time=batch_time, data_time=data_time, loss=losses))
 
         del inputs, targets, input_percentages, input_sizes
-        del out, output_sizes, target_sizes, loss
+        del out, outs, output_sizes, target_sizes, loss
         return loss_value
 
 
@@ -518,7 +522,7 @@ def train(from_epoch, from_iter, from_checkpoint):
             total_loss += trainer.train_batch(epoch, i, data)
             num_losses += 1
 
-            if (i + 1) % 5 == 0:
+            if (i + 1) % 10 == 0:
                 # deal with GPU memory fragmentation
                 gc.collect()
                 torch.cuda.empty_cache()
@@ -613,8 +617,8 @@ if __name__ == '__main__':
     save_folder = args.save_folder
     os.makedirs(save_folder, exist_ok=True)
 
-    plots = PlotWindow(args.id, 'epochs', log_y=True)
-    checkpoint_plots = PlotWindow(args.id, 'checkpoint', log_y=True)
+    plots = PlotWindow(args.id, 'train loss, epochs', log_y=True)
+    checkpoint_plots = PlotWindow(args.id, 'val loss, checkpoints', log_y=True)
     lr_plots = LRPlotWindow(args.id, 'LRFinder', log_x=True)
 
     total_avg_loss, start_epoch, start_iter, start_checkpoint = 0, 0, 0, 0
@@ -646,7 +650,7 @@ if __name__ == '__main__':
                 checkpoint_plots.loss_results = package.get('checkpoint_loss_results', torch.Tensor(10000))
                 checkpoint_plots.cer_results = package.get('checkpoint_cer_results', torch.Tensor(10000))
                 checkpoint_plots.wer_results = package.get('checkpoint_wer_results', torch.Tensor(10000))
-            if package['loss_results'] is not None and start_epoch > 0:
+            if package['cer_results'] is not None and start_epoch > 0:
                 plots.plot_history(start_epoch)
             if package.get('checkpoint_cer_results') is not None and start_checkpoint > 0:
                 checkpoint_plots.plot_history(start_checkpoint)
@@ -667,7 +671,7 @@ if __name__ == '__main__':
         model = DeepSpeech(rnn_hidden_size=args.hidden_size,
                            nb_layers=args.hidden_layers,
                            labels=labels,
-                           rnn_type=supported_rnns[rnn_type],
+                           rnn_type=rnn_type,
                            audio_conf=audio_conf,
                            bidirectional=args.bidirectional,
                            bnm=args.batch_norm_momentum)
@@ -678,7 +682,8 @@ if __name__ == '__main__':
     decoder = GreedyDecoder(labels)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                        manifest_filepath=args.train_manifest,
-                                       labels=labels, normalize=args.norm, augment=args.augment)
+                                       labels=labels, normalize=args.norm, augment=args.augment,
+                                       curriculum_filepath=args.curriculum)
     test_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False)

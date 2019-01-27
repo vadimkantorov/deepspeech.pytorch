@@ -82,7 +82,7 @@ if __name__ == '__main__':
         inputs = inputs.to(device)
 
         # print(inputs.shape, inputs.is_cuda, input_sizes.shape, input_sizes.is_cuda)
-        out, output_sizes = model(inputs, input_sizes)
+        out0, out, output_sizes = model(inputs, input_sizes)
 
         del inputs, targets, input_percentages, target_sizes
 
@@ -136,7 +136,7 @@ if __name__ == '__main__':
             num_tokens += wer_ref
             num_chars += cer_ref
 
-        del out, output_sizes
+        del out, out0, output_sizes
         if (i + 1) % 5 == 0:
             gc.collect()
             torch.cuda.empty_cache()

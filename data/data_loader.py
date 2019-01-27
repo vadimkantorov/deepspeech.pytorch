@@ -86,7 +86,7 @@ class NoiseInjection(object):
 
 
 class SpectrogramParser(AudioParser):
-    def __init__(self, audio_conf, normalize=False, augment=False):
+    def __init__(self, audio_conf, normalize=False, augment=False, channel=-1):
         """
         Parses audio file into spectrogram with optional normalization and various augmentations
         :param audio_conf: Dictionary containing the sample rate, window and the window length/stride in seconds
@@ -100,6 +100,7 @@ class SpectrogramParser(AudioParser):
         self.window = windows.get(audio_conf['window'], windows['hamming'])
         self.normalize = normalize
         self.augment = augment
+        self.channel = channel
         self.noiseInjector = NoiseInjection(audio_conf['noise_dir'], self.sample_rate,
                                             audio_conf['noise_levels']) if audio_conf.get(
             'noise_dir') is not None else None
@@ -107,9 +108,9 @@ class SpectrogramParser(AudioParser):
 
     def parse_audio(self, audio_path):
         if self.augment:
-            y = load_randomly_augmented_audio(audio_path, self.sample_rate)
+            y = load_randomly_augmented_audio(audio_path, self.sample_rate, channel=self.channel)
         else:
-            y = load_audio(audio_path)
+            y = load_audio(audio_path, channel=self.channel)
         if self.noiseInjector:
             add_noise = np.random.binomial(1, self.noise_prob)
             if add_noise:
@@ -120,13 +121,15 @@ class SpectrogramParser(AudioParser):
         return spect
 
     def parse_audio_for_transcription(self, audio_path, channel):
-        #y = load_audio(audio_path, channel=channel)
-        y = load_randomly_augmented_audio(audio_path, tempo_range=(0.5, 0.5), gain_range=(-5,-5))
+        # y = load_audio(audio_path, channel=channel)
+        y = load_randomly_augmented_audio(audio_path, tempo_range=(1, 1), gain_range=(-10, -10), channel=self.channel)
         spect = self.audio_to_stft(y)
-        #print(spect.shape, spect.shape[1] / 50)
-        spect = spect[:, :1000].copy()
+        # print(spect.shape, spect.shape[1] / 50)
+        # print(spect.shape)
+        # spect = spect[:, :1200].copy()
+        # print(spect.shape)
         spect = self.normalize_audio(spect)
-        #spect.add_(-2)
+        # spect.add_(-2)
         return spect
 
     def audio_to_stft(self, y):
@@ -205,7 +208,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             ids = [(row[0], row[1], row[2] if len(row) > 2 else 0) for row in reader]
         if max_items:
             ids = ids[:max_items]
-        print("Found entries:", len(ids))
+        #print("Found entries:", len(ids))
         # self.all_ids = ids
         self.curriculum = None
         self.all_ids = ids
@@ -216,14 +219,18 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         if curriculum_filepath:
             with open(curriculum_filepath, newline='') as f:
                 reader = csv.DictReader(f)
-                self.curriculum = {row['wav']: row for row in reader}
+                rows = [row for row in reader]
+                for r in rows:
+                    r['cer'] = float(r['cer'])
+                    r['wer'] = float(r['wer'])
+                self.curriculum = {row['wav']: row for row in rows}
         else:
             self.curriculum = {wav: {'wav': wav,
                                      'text': self.get_reference_transcript(txt),
                                      'transcript': '',
                                      'offsets': None,
-                                     'cer': 1,
-                                     'wer': 1} for wav, txt, dur in ids}
+                                     'cer': 0.999,
+                                     'wer': 0.999} for wav, txt, dur in ids}
         super(SpectrogramDataset, self).__init__(audio_conf, normalize, augment)
 
     def __getitem__(self, index):
@@ -235,6 +242,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
 
     def get_curriculum_info(self, item):
         audio_path, transcript_path, _dur = item
+        if audio_path not in self.curriculum:
+            return self.get_reference_transcript(transcript_path), 0.999
         return self.curriculum[audio_path]['text'], self.curriculum[audio_path]['cer']
 
     def set_curriculum_epoch(self, epoch, sample=False):
@@ -427,14 +436,16 @@ def audio_with_sox(path, sample_rate, start_time, end_time):
         return y
 
 
-def augment_audio_with_sox(path, sample_rate, tempo, gain):
+def augment_audio_with_sox(path, sample_rate, tempo, gain, channel=-1):  # channels: -1 = both, 0 = left, 1 = right
     """
     Changes tempo and gain of the recording with sox and loads it.
     """
     with NamedTemporaryFile(suffix=".wav") as augmented_file:
         augmented_filename = augmented_file.name
         sox_augment_params = ["tempo", "{:.3f}".format(tempo), "gain", "{:.3f}".format(gain)]
-        sox_params = "sox \"{}\" -r {} -c 1 -b 16 -e si {} {} >>sox.1.log 2>>sox.2.log".format(
+        if channel != -1:
+            sox_augment_params.extend(["remix", str(channel + 1)])
+        sox_params = "sox \"{}\" -r {} -c 1 -b 16 -t wav -e si {} {} >>sox.1.log 2>>sox.2.log".format(
             path.replace('"', '\\"'),
             sample_rate,
             augmented_filename,
@@ -444,8 +455,8 @@ def augment_audio_with_sox(path, sample_rate, tempo, gain):
         return y
 
 
-def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.9, 1.1),
-                                  gain_range=(-10, 10)):
+def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.15),
+                                  gain_range=(-10, 10), channel=-1):
     """
     Picks tempo and gain uniformly, applies it to the utterance by using sox utility.
     Returns the augmented utterance.
@@ -455,5 +466,5 @@ def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.9, 1.1
     low_gain, high_gain = gain_range
     gain_value = np.random.uniform(low=low_gain, high=high_gain)
     audio = augment_audio_with_sox(path=path, sample_rate=sample_rate,
-                                   tempo=tempo_value, gain=gain_value)
+                                   tempo=tempo_value, gain=gain_value, channel=channel)
     return audio

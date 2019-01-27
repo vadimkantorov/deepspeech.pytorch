@@ -10,7 +10,8 @@ from torch.nn.parameter import Parameter
 supported_rnns = {
     'lstm': nn.LSTM,
     'rnn': nn.RNN,
-    'gru': nn.GRU
+    'gru': nn.GRU,
+    'cnn': None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -67,14 +68,6 @@ class MaskConv(nn.Module):
                     mask[i].narrow(2, length, mask[i].size(2) - length).fill_(1)
             x = x.masked_fill(mask, 0)
         return x, lengths
-
-
-class InferenceBatchSoftmax(nn.Module):
-    def forward(self, input_):
-        if not self.training:
-            return F.softmax(input_, dim=-1)
-        else:
-            return input_
 
 
 class BatchRNN(nn.Module):
@@ -175,6 +168,9 @@ class Lookahead(nn.Module):
                + ', context=' + str(self.context) + ')'
 
 
+DEBUG = 1
+
+
 class DeepSpeech(nn.Module):
     def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=5, audio_conf=None,
                  bidirectional=True, context=20, bnm=0.1):
@@ -196,8 +192,8 @@ class DeepSpeech(nn.Module):
         window_size = self._audio_conf.get("window_size", 0.02)
         num_classes = len(self._labels)
 
-        self.dropout1 = nn.Dropout(p=0.1, inplace=True)
-        self.dropout2 = nn.Dropout(p=0.1, inplace=True)
+        self.dropout1 = nn.Dropout(p=0.5, inplace=True)
+        self.dropout2 = nn.Dropout(p=0.5, inplace=True)
         self.conv = MaskConv(nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(20, 5)),
             nn.BatchNorm2d(32, momentum=bnm),
@@ -206,67 +202,104 @@ class DeepSpeech(nn.Module):
             nn.BatchNorm2d(32, momentum=bnm),
             nn.Hardtanh(0, 20, inplace=True),
         ))
-        # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
-        rnn_input_size = int(math.floor((sample_rate * window_size + 1e-2) / 2) + 1)
-        rnn_input_size = int(math.floor(rnn_input_size + 2 * 20 - 41 + 1e-2) / 2 + 1)
-        rnn_input_size = int(math.floor(rnn_input_size + 2 * 10 - 21 + 1e-2) / 2 + 1)
-        rnn_input_size *= 32
 
-        rnns = []
-        rnn = BatchRNN(input_size=rnn_input_size, hidden_size=rnn_hidden_size, rnn_type=rnn_type,
-                       bidirectional=bidirectional, batch_norm=False)
-        rnns.append(('0', rnn))
-        for x in range(nb_layers - 1):
-            rnn = BatchRNN(input_size=rnn_hidden_size, hidden_size=rnn_hidden_size, rnn_type=rnn_type,
-                           bidirectional=bidirectional, bnm=bnm)
-            rnns.append(('%d' % (x + 1), rnn))
-        self.rnns = nn.Sequential(OrderedDict(rnns))
-        self.lookahead = nn.Sequential(
-            # consider adding batch norm?
-            Lookahead(rnn_hidden_size, context=context),
-            nn.Hardtanh(0, 20, inplace=True)
-        ) if not bidirectional else None
+        if self._rnn_type == 'cnn':
+            def _block(in_channels, out_channels, kernel_size, padding=0, stride=1, bnorm=False, bias=True):
+                res = [nn.Conv1d(in_channels=in_channels, out_channels=out_channels,
+                                 kernel_size=kernel_size, padding=padding, stride=stride, bias=bias)]
 
-        fully_connected = nn.Sequential(
-            nn.BatchNorm1d(rnn_hidden_size, momentum=bnm),
-            nn.Linear(rnn_hidden_size, num_classes, bias=False)
-        )
-        self.fc = nn.Sequential(
-            SequenceWise(fully_connected),
-        )
-        self.inference_softmax = InferenceBatchSoftmax()
+                if bnorm:
+                    res.append(nn.BatchNorm1d(out_channels))
+                res.append(nn.ReLU(inplace=True))
+                return res
+
+            size = rnn_hidden_size
+            bnorm = True
+            self.rnns = nn.Sequential(
+                *_block(in_channels=161, out_channels=256, kernel_size=7, padding=3, stride=2, bnorm=bnorm,
+                        bias=not bnorm),
+                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=256, out_channels=size, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
+                *_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm),
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+        else:
+            # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
+            rnn_input_size = int(math.floor((sample_rate * window_size + 1e-2) / 2) + 1)
+            rnn_input_size = int(math.floor(rnn_input_size + 2 * 20 - 41 + 1e-2) / 2 + 1)
+            rnn_input_size = int(math.floor(rnn_input_size + 2 * 10 - 21 + 1e-2) / 2 + 1)
+            rnn_input_size *= 32
+
+            rnns = []
+            rnn = BatchRNN(input_size=rnn_input_size, hidden_size=rnn_hidden_size, rnn_type=supported_rnns[rnn_type],
+                           bidirectional=bidirectional, batch_norm=False)
+            rnns.append(('0', rnn))
+            for x in range(nb_layers - 1):
+                rnn = BatchRNN(input_size=rnn_hidden_size, hidden_size=rnn_hidden_size,
+                               rnn_type=supported_rnns[rnn_type],
+                               bidirectional=bidirectional, bnm=bnm)
+                rnns.append(('%d' % (x + 1), rnn))
+            self.rnns = nn.Sequential(OrderedDict(rnns))
+
+            self.lookahead = nn.Sequential(
+                # consider adding batch norm?
+                Lookahead(rnn_hidden_size, context=context),
+                nn.Hardtanh(0, 20, inplace=True)
+            ) if not bidirectional else None
+
+            fully_connected = nn.Sequential(
+                nn.BatchNorm1d(rnn_hidden_size, momentum=bnm),
+                nn.Linear(rnn_hidden_size, num_classes, bias=False)
+            )
+            self.fc = nn.Sequential(
+                SequenceWise(fully_connected),
+            )
 
     def forward(self, x, lengths):
         assert x.is_cuda
         lengths = lengths.cpu().int()
         output_lengths = self.get_seq_lens(lengths).cuda()
-        x = self.dropout1(x)
-        x, _ = self.conv(x, output_lengths)
-        x = self.dropout2(x)
-        assert x.is_cuda
-        # x = x.to('cuda')
 
-        sizes = x.size()
-        x = x.view(sizes[0], sizes[1] * sizes[2], sizes[3])  # Collapse feature dimension
-        x = x.transpose(1, 2).transpose(0, 1).contiguous()  # TxNxH
-        assert x.is_cuda
-
-        for rnn in self.rnns:
-            x = rnn(x, output_lengths)
+        if self._rnn_type == 'cnn':
+            x = x.squeeze(1)
+            x = self.rnns(x)
+            x = self.fc(x)
+            x = x.transpose(1, 2).transpose(0, 1).contiguous()
+        else:
+            # x = self.dropout1(x)
+            x, _ = self.conv(x, output_lengths)
+            # x = self.dropout2(x)
+            if DEBUG: assert x.is_cuda
+            # x = x.to('cuda')
+            sizes = x.size()
+            x = x.view(sizes[0], sizes[1] * sizes[2], sizes[3])  # Collapse feature dimension
+            x = x.transpose(1, 2).transpose(0, 1).contiguous()  # TxNxH
             assert x.is_cuda
 
-        if not self._bidirectional:  # no need for lookahead layer in bidirectional
-            x = self.lookahead(x)
-            assert x.is_cuda
+            for rnn in self.rnns:
+                x = rnn(x, output_lengths)
+                assert x.is_cuda
 
-        x = self.fc(x)
-        assert x.is_cuda
+            if not self._bidirectional:  # no need for lookahead layer in bidirectional
+                x = self.lookahead(x)
+                assert x.is_cuda
+
+            x = self.fc(x)
+        if DEBUG: assert x.is_cuda
         x = x.transpose(0, 1)
         # identity in training mode, softmax in eval mode
-        x = self.inference_softmax(x)
-        assert x.is_cuda
-        assert output_lengths.is_cuda
-        return x, output_lengths
+        outs = F.softmax(x, dim=-1)
+        if DEBUG: assert outs.is_cuda
+        if DEBUG: assert output_lengths.is_cuda
+        return x, outs, output_lengths
 
     def get_seq_lens(self, input_length):
         """
@@ -288,12 +321,13 @@ class DeepSpeech(nn.Module):
                     nb_layers=package['hidden_layers'],
                     labels=package['labels'],
                     audio_conf=package['audio_conf'],
-                    rnn_type=supported_rnns[package['rnn_type']],
+                    rnn_type=package['rnn_type'],
                     bnm=package.get('bnm', 0.1),
                     bidirectional=package.get('bidirectional', True))
         model.load_state_dict(package['state_dict'])
-        for x in model.rnns:
-            x.flatten_parameters()
+        if package['rnn_type'] != 'cnn':
+            for x in model.rnns:
+                x.flatten_parameters()
         return model
 
     @classmethod
@@ -302,7 +336,7 @@ class DeepSpeech(nn.Module):
                     nb_layers=package['hidden_layers'],
                     labels=package['labels'],
                     audio_conf=package['audio_conf'],
-                    rnn_type=supported_rnns[package['rnn_type']],
+                    rnn_type=package['rnn_type'],
                     bnm=package.get('bnm', 0.1),
                     bidirectional=package.get('bidirectional', True))
         model.load_state_dict(package['state_dict'])
@@ -317,7 +351,7 @@ class DeepSpeech(nn.Module):
             'version': model._version,
             'hidden_size': model._hidden_size,
             'hidden_layers': model._hidden_layers,
-            'rnn_type': supported_rnns_inv.get(model._rnn_type, model._rnn_type.__name__.lower()),
+            'rnn_type': model._rnn_type,
             'audio_conf': model._audio_conf,
             'labels': model._labels,
             'state_dict': model.state_dict(),
@@ -369,7 +403,7 @@ class DeepSpeech(nn.Module):
             "version": m._version,
             "hidden_size": m._hidden_size,
             "hidden_layers": m._hidden_layers,
-            "rnn_type": supported_rnns_inv[m._rnn_type]
+            "rnn_type": m._rnn_type
         }
         return meta
 
@@ -392,7 +426,7 @@ def main():
     print("DeepSpeech version: ", model._version)
     print("")
     print("Recurrent Neural Network Properties")
-    print("  RNN Type:         ", model._rnn_type.__name__.lower())
+    print("  RNN Type:         ", model._rnn_type)
     print("  RNN Layers:       ", model._hidden_layers)
     print("  RNN Size:         ", model._hidden_size)
     print("  Classes:          ", len(model._labels))

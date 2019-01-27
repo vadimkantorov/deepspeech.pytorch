@@ -64,7 +64,7 @@ def transcribe(audio_path, parser, model, decoder, device):
     spect = spect.to(device)
     input_sizes = torch.IntTensor([spect.size(3)]).int()
     # print(spect.shape, input_sizes.shape)
-    out, output_sizes = model(spect, input_sizes)
+    out0, out, output_sizes = model(spect, input_sizes)
     decoded_output, decoded_offsets = decoder.decode(out, output_sizes)
     return decoded_output, decoded_offsets
 
@@ -88,8 +88,15 @@ if __name__ == '__main__':
     else:
         decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
 
-    parser = SpectrogramParser(audio_conf, normalize='max_frame')
+    parser = SpectrogramParser(audio_conf, normalize='max_frame', channel=args.channel)
 
     decoded_output, decoded_offsets = transcribe(args.audio_path, parser, model, decoder, device)
     output = decode_results(model, decoded_output, decoded_offsets)
+    output['input'] = {
+        'channel': args.channel,
+        'source': args.audio_path}
+    output['model'] = {
+        'model': args.model_path,
+    }
+
     print(json.dumps(output, ensure_ascii=False))

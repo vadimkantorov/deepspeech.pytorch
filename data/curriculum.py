@@ -18,7 +18,6 @@ class Curriculum:
                     yield item
                     total += 1
 
-
     @classmethod
     def get_prob(cls, text, cer):
         length_bonus = cls.SHORT_PROB * 3 / (3 + len(text))

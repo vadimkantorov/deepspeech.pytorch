@@ -20,7 +20,9 @@ from torch.utils.data.sampler import Sampler
 
 from data.curriculum import Curriculum
 
-windows = {'hamming': scipy.signal.hamming, 'hann': scipy.signal.hann, 'blackman': scipy.signal.blackman,
+windows = {'hamming': scipy.signal.hamming,
+           'hann': scipy.signal.hann,
+           'blackman': scipy.signal.blackman,
            'bartlett': scipy.signal.bartlett}
 
 
@@ -237,8 +239,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.all_ids = ids
         self.ids = ids
         self.size = len(self.ids)
-        self.labels = labels
-        self.labels_map = dict([(labels[i], i) for i in range(len(labels))])
+        self.labels = Labels(labels)
         if curriculum_filepath:
             with open(curriculum_filepath, newline='') as f:
                 reader = csv.DictReader(f)
@@ -296,31 +297,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             for cl in self.curriculum.values():
                 writer.writerow(cl)
 
-    DIGITS = {
-        '0': 'НОЛЬ*',
-        '1': 'ОДИН*',
-        '2': 'ДВА*',
-        '3': 'ТРИ*',
-        '4': 'ЧЕТЫРЕ*',
-        '5': 'ПЯТЬ*',
-        '6': 'ШЕСТЬ*',
-        '7': 'СЕМЬ*',
-        '8': 'ВОСЕМЬ*',
-        '9': 'ДЕВЯТЬ*',
-    }
-
-    def getch(self, c):
-        if c == 'Ё':
-            return 'Е'
-        if c.isdigit():
-            return ' ' + self.DIGITS[c] + ' '
-        if c == '*':
-            return ' '
-        if c in self.labels_map:
-            return c
-        return ' '
-
     def parse_transcript(self, transcript_path):
+        ### MOVE TO Labels.text2chars()
         transcript = []
         with open(transcript_path, 'r', encoding='utf8') as transcript_file:
             chars = transcript_file.read().upper()

@@ -483,7 +483,8 @@ class Trainer:
 
 
 def init_train_set(epoch):
-    train_dataset.set_curriculum_epoch(epoch, sample=True)
+    #train_dataset.set_curriculum_epoch(epoch, sample=True)
+    train_dataset.set_curriculum_epoch(epoch, sample=False)
     global train_loader, train_sampler
     if not args.distributed:
         train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)

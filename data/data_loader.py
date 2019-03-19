@@ -1,12 +1,11 @@
 import csv
-import math
 import os
 import random
 import subprocess
-from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import librosa
+import math
 import numpy as np
 import scipy.ndimage
 import scipy.signal
@@ -19,6 +18,7 @@ from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler
 
 from data.curriculum import Curriculum
+from data.labels import Labels
 
 windows = {'hamming': scipy.signal.hamming,
            'hann': scipy.signal.hann,
@@ -27,7 +27,7 @@ windows = {'hamming': scipy.signal.hamming,
 
 
 def load_audio(path, channel=-1):
-    sound, _ = torchaudio.load(path, normalization=True)
+    sound, sample_rate = torchaudio.load(path, normalization=False)
     sound = sound.numpy().T
     if len(sound.shape) > 1:
         if sound.shape[1] == 1:
@@ -36,7 +36,7 @@ def load_audio(path, channel=-1):
             sound = sound.mean(axis=1)  # multiple channels, average
         else:
             sound = sound[:, channel]  # multiple channels, average
-    return sound
+    return sound, sample_rate
 
 
 class AudioParser(object):
@@ -81,7 +81,8 @@ class NoiseInjection(object):
         data_len = len(data) / self.sample_rate
         noise_start = np.random.rand() * (noise_len - data_len)
         noise_end = noise_start + data_len
-        noise_dst = audio_with_sox(noise_path, self.sample_rate, noise_start, noise_end)
+        noise_dst, sample_rate_ = audio_with_sox(noise_path, self.sample_rate, noise_start, noise_end)
+        assert sample_rate_ == self.sample_rate
         assert len(data) == len(noise_dst)
         noise_energy = np.sqrt(noise_dst.dot(noise_dst)) / noise_dst.size
         data_energy = np.sqrt(data.dot(data)) / data.size
@@ -124,26 +125,32 @@ class SpectrogramParser(AudioParser):
             tempo_name, tempo = TEMPOS[0]
         chan = 'avg' if self.channel == -1 else str(self.channel)
         cache_fn = audio_path + '-' + tempo_name + '-' + chan + '.npy'
+        spect = None
         if os.path.exists(cache_fn):
-            #print("Loading", cache_fn)
-            spect = np.load(cache_fn).item()['spect']
-        else:
+            # print("Loading", cache_fn)
+            try:
+                spect = np.load(cache_fn).item()['spect']
+            except Exception as e:
+                import traceback
+                print("Can't load file", cache_fn, 'with exception:', str(e))
+                traceback.print_exc()
+        if spect is None:
             if self.augment:
-                y = load_randomly_augmented_audio(audio_path, self.sample_rate, channel=self.channel)
+                y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate, channel=self.channel)
             else:
-                y = load_audio(audio_path, channel=self.channel)
+                y, sample_rate = load_audio(audio_path, channel=self.channel)
             if self.noiseInjector:
                 add_noise = np.random.binomial(1, self.noise_prob)
                 if add_noise:
                     y = self.noiseInjector.inject_noise(y)
 
-            spect = self.audio_to_stft(y)
+            spect = self.audio_to_stft(y, sample_rate)
             spect = self.normalize_audio(spect)
             try:
                 np.save(cache_fn, {'spect': spect})
             except KeyboardInterrupt:
                 os.unlink(cache_fn)
-            #print("Saved to", cache_fn)
+            # print("Saved to", cache_fn)
 
         if self.augment and self.normalize == 'max_frame':
             spect.add_(torch.rand(1) - 0.5)
@@ -152,16 +159,17 @@ class SpectrogramParser(AudioParser):
     def parse_audio_for_transcription(self, audio_path):
         return self.parse_audio(audio_path)
 
-    def audio_to_stft(self, y):
-        n_fft = int(self.sample_rate * (self.window_size + 1e-8))
+    def audio_to_stft(self, y, sample_rate):
+        n_fft = int(sample_rate * (self.window_size + 1e-8))
         win_length = n_fft
-        hop_length = int(self.sample_rate * (self.window_stride + 1e-8))
+        hop_length = int(sample_rate * (self.window_stride + 1e-8))
         # print(n_fft, win_length, hop_length)
         # STFT
         D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
         spect, phase = librosa.magphase(D)
-        return spect
+        #print(spect.shape)
+        return spect[:161]
 
     def normalize_audio(self, spect):
         # S = log(S+1)
@@ -298,27 +306,16 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 writer.writerow(cl)
 
     def parse_transcript(self, transcript_path):
-        ### MOVE TO Labels.text2chars()
-        transcript = []
+        if not transcript_path:
+            return self.labels.parse('')
         with open(transcript_path, 'r', encoding='utf8') as transcript_file:
-            chars = transcript_file.read().upper()
-            chars = ''.join([self.getch(c) for c in chars])
-            for c in ' '.join(chars.split()):
-                code = self.labels_map[c]
-                if transcript and transcript[-1] == code:
-                    continue  # FIXME: for this special mode
-                    # code = self.labels_map['2']  # double char
-                transcript.append(code)
-        if len(transcript) < 1:
-            transcript = [self.labels_map['*']]
-        # print(''.join([self.labels[c] for c in transcript]))
-        return transcript
+            return self.labels.parse(transcript_file.read())
 
     def __len__(self):
         return self.size
 
     def get_reference_transcript(self, txt):
-        return ''.join([self.labels[i] for i in self.parse_transcript(txt)])
+        return self.labels.render_transcript(self.parse_transcript(txt))
 
 
 def _collate_fn(batch):
@@ -433,8 +430,9 @@ def audio_with_sox(path, sample_rate, start_time, end_time):
             path.replace('"', '\\"'), sample_rate,
             tar_filename, start_time, end_time)
         os.system(sox_params)
-        y = load_audio(tar_filename)
-        return y
+        y, sample_rate_ = load_audio(tar_filename)
+        assert sample_rate == sample_rate_
+        return y, sample_rate
 
 
 def augment_audio_with_sox(path, sample_rate, tempo, gain, channel=-1):  # channels: -1 = both, 0 = left, 1 = right
@@ -452,8 +450,9 @@ def augment_audio_with_sox(path, sample_rate, tempo, gain, channel=-1):  # chann
             augmented_filename,
             " ".join(sox_augment_params))
         os.system(sox_params)
-        y = load_audio(augmented_filename)
-        return y
+        y, sample_rate_ = load_audio(augmented_filename)
+        assert sample_rate == sample_rate_
+        return y, sample_rate
 
 
 def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.15),
@@ -466,6 +465,7 @@ def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.
     tempo_value = np.random.uniform(low=low_tempo, high=high_tempo)
     low_gain, high_gain = gain_range
     gain_value = np.random.uniform(low=low_gain, high=high_gain)
-    audio = augment_audio_with_sox(path=path, sample_rate=sample_rate,
+    audio, sample_rate_ = augment_audio_with_sox(path=path, sample_rate=sample_rate,
                                    tempo=tempo_value, gain=gain_value, channel=channel)
-    return audio
+    assert sample_rate == sample_rate_
+    return audio, sample_rate

@@ -15,7 +15,8 @@ parser.add_argument('--noise-level', type=float, default=1.0,
 args = parser.parse_args()
 
 noise_injector = NoiseInjection()
-data = load_audio(args.input_path)
+data, sample_rate_ = load_audio(args.input_path)
+assert sample_rate_ == args.sample_rate
 mixed_data = noise_injector.inject_noise_sample(data, args.noise_path, args.noise_level)
 mixed_data = torch.tensor(mixed_data, dtype=torch.float).unsqueeze(1)  # Add channels dim
 torchaudio.save(args.output_path, mixed_data, args.sample_rate)

@@ -6,7 +6,10 @@ authors = ["Yuri Baburov <burchik@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.6"
-torch = {path = "dist/torch-1.0.0-cp36-cp36m-manylinux1_x86_64.whl"}
+torch = "^1.0"
+lxml = "^4.3"
+dawg = "^0.7.8"
+rnnmorph = "^0.4.0"
 
 [tool.poetry.dev-dependencies]
 

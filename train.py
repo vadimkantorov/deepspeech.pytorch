@@ -1,14 +1,14 @@
 import argparse
-import csv
 import datetime
+import gc
 import json
 import os
 import time
-import gc
 
 import torch.distributed as dist
 import torch.utils.data.distributed
-from tqdm import tqdm
+import tqdm
+from enorm.enorm import ENorm
 from warpctc_pytorch import CTCLoss
 
 from data.data_loader import AudioDataLoader, SpectrogramDataset, BucketingSampler, DistributedBucketingSampler
@@ -16,11 +16,16 @@ from data.utils import reduce_tensor, get_cer_wer
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
 
+tq = tqdm.tqdm
+
+
 VISIBLE_DEVICES = os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',') or ['0']
 
 parser = argparse.ArgumentParser(description='DeepSpeech training')
 parser.add_argument('--train-manifest', metavar='DIR',
                     help='path to train manifest csv', default='data/train_manifest.csv')
+parser.add_argument('--cache-dir', metavar='DIR',
+                    help='path to save temp audio', default='data/cache/')
 parser.add_argument('--val-manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/val_manifest.csv')
 parser.add_argument('--curriculum', metavar='DIR',
@@ -46,8 +51,9 @@ parser.add_argument('--checkpoint-anneal', default=1.0, type=float,
                     help='Annealing applied to learning rate every checkpoint')
 parser.add_argument('--silent', dest='silent', action='store_true', help='Turn off progress tracking per iteration')
 parser.add_argument('--checkpoint', dest='checkpoint', action='store_true', help='Enables checkpoint saving of model')
-parser.add_argument('--checkpoint-per-batch', default=0, type=int, help='Save checkpoint per batch. 0 means never save')
+parser.add_argument('--checkpoint-per-samples', default=0, type=int, help='Save checkpoint per samples. 0 means never save')
 parser.add_argument('--visdom', dest='visdom', action='store_true', help='Turn on visdom graphing')
+parser.add_argument('--enorm', dest='enorm', action='store_true', help='Turn on enorm ( https://github.com/facebookresearch/enorm )')
 parser.add_argument('--tensorboard', dest='tensorboard', action='store_true', help='Turn on tensorboard graphing')
 parser.add_argument('--log-dir', default='visualize/deepspeech_final', help='Location of tensorboard log')
 parser.add_argument('--log-params', dest='log_params', action='store_true', help='Log parameter values and gradients')
@@ -297,7 +303,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     num_chars, num_words, num_losses = 0, 0, 0
     model.eval()
     with torch.no_grad():
-        for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
+        for i, data in tq(enumerate(test_loader), total=len(test_loader)):
             inputs, targets, filenames, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
@@ -310,9 +316,9 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
 
             inputs = inputs.to(device)
 
-            out, outs, output_sizes = model(inputs, input_sizes)
+            logits, probs, output_sizes = model(inputs, input_sizes)
 
-            loss = criterion(out.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
+            loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
             inf = float("inf")
             if args.distributed:
@@ -327,11 +333,14 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
             val_loss_sum += loss_value
             num_losses += 1
 
-            decoded_output, _ = decoder.decode(out, output_sizes)
+            decoded_output, _ = decoder.decode(probs, output_sizes)
             target_strings = decoder.convert_to_strings(split_targets)
             for x in range(len(target_strings)):
                 transcript, reference = decoded_output[x][0], target_strings[x][0]
                 wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
+                if x < 1:
+                    print("CER: {:6.2f}% WER: {:6.2f}% Filename: {}".format(cer/cer_ref*100, wer/wer_ref*100, filenames[x]))
+                    print('Reference:', reference, '\nTranscript:', transcript)
 
                 val_wer_sum += wer
                 val_cer_sum += cer
@@ -339,7 +348,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 num_chars += cer_ref
 
             del inputs, targets, input_percentages, target_sizes
-            del out, outs, output_sizes, input_sizes
+            del logits, probs, output_sizes, input_sizes
             del split_targets, loss
 
             if args.cuda:
@@ -391,10 +400,10 @@ class Trainer:
         self.num_chars = 0
 
     def get_cer(self):
-        return 100. * self.train_cer / self.num_chars
+        return 100. * self.train_cer / (self.num_chars or 1)
 
     def get_wer(self):
-        return 100. * self.train_wer / self.num_words
+        return 100. * self.train_wer / (self.num_words or 1)
 
     def train_batch(self, epoch, batch_id, data):
         inputs, targets, filenames, input_percentages, target_sizes = data
@@ -405,9 +414,9 @@ class Trainer:
         inputs = inputs.to(device)
         input_sizes = input_sizes.to(device)
 
-        out, outs, output_sizes = model(inputs, input_sizes)
-        assert out.is_cuda
-        assert outs.is_cuda
+        logits, probs, output_sizes = model(inputs, input_sizes)
+        assert logits.is_cuda
+        assert probs.is_cuda
         assert output_sizes.is_cuda
 
         split_targets = []
@@ -416,7 +425,7 @@ class Trainer:
             split_targets.append(targets[offset:offset + size])
             offset += size
 
-        decoded_output, _ = decoder.decode(out, output_sizes)
+        decoded_output, _ = decoder.decode(probs, output_sizes)
         target_strings = decoder.convert_to_strings(split_targets)
         for x in range(len(target_strings)):
             transcript, reference = decoded_output[x][0], target_strings[x][0]
@@ -428,14 +437,14 @@ class Trainer:
             self.num_words += wer_ref
             self.num_chars += cer_ref
 
-        out = out.transpose(0, 1)  # TxNxH
+        logits = logits.transpose(0, 1)  # TxNxH
 
-        if torch.isnan(out).any():  # and args.nan == 'zero':
+        if torch.isnan(logits).any():  # and args.nan == 'zero':
             # work around bad data
             print("WARNING: Working around NaNs in data")
-            out[torch.isnan(out)] = 0
+            logits[torch.isnan(logits)] = 0
 
-        loss = criterion(out, targets, output_sizes.cpu(), target_sizes)
+        loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
         loss = loss / inputs.size(0)  # average the loss by minibatch
         loss = loss.to(device)
 
@@ -459,12 +468,14 @@ class Trainer:
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
 
-        if torch.isnan(out).any():
+        if torch.isnan(logits).any():
             # work around bad data
             print("WARNING: Skipping NaNs in backward step")
         else:
             # SGD step
             optimizer.step()
+            if args.enorm: 
+                enorm.step()
 
         # measure elapsed time
         batch_time.update(time.time() - self.end)
@@ -478,16 +489,17 @@ class Trainer:
                 batch_time=batch_time, data_time=data_time, loss=losses))
 
         del inputs, targets, input_percentages, input_sizes
-        del out, outs, output_sizes, target_sizes, loss
+        del logits, probs, output_sizes, target_sizes, loss
         return loss_value
 
 
-def init_train_set(epoch):
+def init_train_set(epoch, from_iter):
     #train_dataset.set_curriculum_epoch(epoch, sample=True)
     train_dataset.set_curriculum_epoch(epoch, sample=False)
     global train_loader, train_sampler
     if not args.distributed:
         train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
+        train_sampler.bins = train_sampler.bins[from_iter:]
     else:
         train_sampler = DistributedBucketingSampler(train_dataset,
                                                     batch_size=args.batch_size,
@@ -504,12 +516,12 @@ def init_train_set(epoch):
 def train(from_epoch, from_iter, from_checkpoint):
     print('Starting training with id="{}" at GPU="{}" with lr={}'.format(args.id, args.gpu_rank or VISIBLE_DEVICES[0],
                                                                          get_lr()))
-
+    checkpoint_per_batch = 1+(args.checkpoint_per_samples-1) // args.batch_size if args.checkpoint_per_samples > 0 else 0
     trainer = Trainer()
     checkpoint = from_checkpoint
     best_score = None
     for epoch in range(from_epoch, args.epochs):
-        init_train_set(epoch)
+        init_train_set(epoch, from_iter=from_iter)
         trainer.reset_scores()
         total_loss = 0
         num_losses = 1
@@ -518,7 +530,7 @@ def train(from_epoch, from_iter, from_checkpoint):
         start_epoch_time = time.time()
 
         for i, data in enumerate(train_loader, start=from_iter):
-            if i >= len(train_sampler):
+            if i >= len(train_sampler) + start_iter:
                 break
             total_loss += trainer.train_batch(epoch, i, data)
             num_losses += 1
@@ -528,9 +540,9 @@ def train(from_epoch, from_iter, from_checkpoint):
                 gc.collect()
                 torch.cuda.empty_cache()
 
-            if args.checkpoint_per_batch > 0 and is_leader:
-                if 0 < i < len(train_sampler) - 1 and (i + 1) % args.checkpoint_per_batch == 0:
-                    file_path = '%s/checkpoint_epoch_%02d_iter_%05d.model' % (save_folder, epoch + 1, i + 1)
+            if checkpoint_per_batch > 0 and is_leader:
+                if (i + 1) % checkpoint_per_batch == 0:
+                    file_path = '%s/checkpoint_%04d_epoch_%02d_iter_%05d.model' % (save_folder, checkpoint + 1, epoch + 1, i + 1)
                     print("Saving checkpoint model to %s" % file_path)
                     torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch,
                                                     iteration=i,
@@ -560,12 +572,16 @@ def train(from_epoch, from_iter, from_checkpoint):
               'Average Loss {loss:.3f}\t'.format(epoch + 1, epoch_time=epoch_time, loss=total_loss / num_losses))
 
         from_iter = 0  # Reset start iteration for next epoch
+
+        if trainer.num_chars == 0:
+            continue
+
         wer_avg, cer_avg = check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
         new_score = wer_avg + cer_avg
         checkpoint += 1
 
         if args.checkpoint and is_leader:  # checkpoint after the end of each epoch
-            file_path = '%s/deepspeech_%d.model' % (save_folder, epoch + 1)
+            file_path = '%s/model_checkpoint_%04d_epoch_%02d.model' % (save_folder, checkpoint+1, epoch + 1)
             torch.save(DeepSpeech.serialize(model,
                                             optimizer=optimizer,
                                             epoch=epoch,
@@ -679,13 +695,15 @@ if __name__ == '__main__':
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
 
+    enorm = ENorm(model.named_parameters(), optimizer, c=1)
+
     criterion = CTCLoss()
     decoder = GreedyDecoder(labels)
-    train_dataset = SpectrogramDataset(audio_conf=audio_conf,
+    train_dataset = SpectrogramDataset(audio_conf=audio_conf, cache_path=args.cache_dir,
                                        manifest_filepath=args.train_manifest,
                                        labels=labels, normalize=args.norm, augment=args.augment,
                                        curriculum_filepath=args.curriculum)
-    test_dataset = SpectrogramDataset(audio_conf=audio_conf,
+    test_dataset = SpectrogramDataset(audio_conf=audio_conf, cache_path=args.cache_dir,
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False)
     if args.reverse_sort:

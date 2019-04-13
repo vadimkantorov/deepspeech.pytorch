@@ -15,6 +15,8 @@ from opts import add_decoder_args, add_inference_args
 
 parser = argparse.ArgumentParser(description='DeepSpeech transcription')
 parser = add_inference_args(parser)
+parser.add_argument('--cache-dir', metavar='DIR',
+                    help='path to save temp audio', default='data/cache/')
 parser.add_argument('--test-manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/test_manifest.csv')
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
@@ -48,7 +50,7 @@ if __name__ == '__main__':
         report_file.writerow(['wav', 'text', 'transcript', 'offsets', 'CER', 'WER'])
 
     if args.decoder == "beam":
-        from decoder import BeamCTCDecoder
+        from .decoder import BeamCTCDecoder
 
         decoder = BeamCTCDecoder(labels, lm_path=args.lm_path, alpha=args.alpha, beta=args.beta,
                                  cutoff_top_n=args.cutoff_top_n, cutoff_prob=args.cutoff_prob,
@@ -60,6 +62,7 @@ if __name__ == '__main__':
     target_decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
     test_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                       manifest_filepath=args.test_manifest,
+                                      cache_path=args.cache_dir,
                                       labels=labels,
                                       normalize=args.norm)
     # import random;random.shuffle(test_dataset.ids)
@@ -67,8 +70,8 @@ if __name__ == '__main__':
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
                                   num_workers=args.num_workers)
     total_cer, total_wer, num_tokens, num_chars = 0, 0, 0, 0
-    output_data = []
-    for i, (data) in tqdm(enumerate(test_loader), total=len(test_loader)):
+    processed_files = []
+    for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
         inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
@@ -86,16 +89,36 @@ if __name__ == '__main__':
 
         del inputs, targets, input_percentages, target_sizes
 
-        if decoder is None:
-            # add output to data array, and continue
-            output_data.append((out.numpy(), output_sizes.numpy()))
-            continue
-
+        if decoder is None: continue
         decoded_output, _ = decoder.decode(out.data, output_sizes.data)
         target_strings = target_decoder.convert_to_strings(split_targets)
-        for x in range(len(target_strings)):
+
+        out_raw_cpu = out0.cpu().numpy()
+        out_softmax_cpu = out.cpu().numpy()
+        sizes_cpu = output_sizes.cpu().numpy()
+        for x in tqdm(range(len(target_strings))):
             transcript, reference = decoded_output[x][0], target_strings[x][0]
-            wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
+
+            wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript[:2000], reference[:2000])
+
+            if args.output_path:
+                # add output to data array, and continue
+                import pickle
+                with open(filenames[x]+'.ts', 'wb') as f:
+                    results = {
+                        'logits': out_raw_cpu[x, :sizes_cpu[x]],
+                        'probs': out_softmax_cpu[x, :sizes_cpu[x]],
+                        'len': sizes_cpu[x],
+                        'transcript': transcript,
+                        'reference': reference,
+                        'filename': filenames[x],
+                        'wer': wer / wer_ref,
+                        'cer': cer / cer_ref,
+                    }
+                    pickle.dump(results, f, protocol=4)
+                    del results
+                # continue
+                processed_files.append(filenames[x] + '.ts')
 
             if args.verbose:
                 print("Ref:", reference)
@@ -126,7 +149,6 @@ if __name__ == '__main__':
                     filenames[x],
                     reference,
                     transcript,
-                    '',
                     cer / cer_ref,
                     wer / wer_ref
                 ])
@@ -136,8 +158,8 @@ if __name__ == '__main__':
             num_tokens += wer_ref
             num_chars += cer_ref
 
-        del out, out0, output_sizes
-        if (i + 1) % 5 == 0:
+        del out, out0, output_sizes, out_raw_cpu, out_softmax_cpu
+        if (i + 1) % 5 == 0 or args.batch_size == 1:
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -148,5 +170,7 @@ if __name__ == '__main__':
         print('Test Summary \t'
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(wer=wer_avg * 100, cer=cer_avg * 100))
-    else:
-        np.save(args.output_path, output_data)
+    if args.output_path:
+        import pickle
+        with open(args.output_path, 'w') as f:
+            f.write('\n'.join(processed_files))

@@ -16,6 +16,8 @@ import json
 
 parser = argparse.ArgumentParser(description='DeepSpeech transcription')
 parser = add_inference_args(parser)
+parser.add_argument('--cache-dir', metavar='DIR',
+                    help='path to save temp audio', default='data/cache/')
 parser.add_argument('--audio-path', default='audio.wav',
                     help='Audio file to predict on')
 parser.add_argument('--offsets', dest='offsets', action='store_true',
@@ -88,7 +90,8 @@ if __name__ == '__main__':
     else:
         decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
 
-    parser = SpectrogramParser(audio_conf, normalize='max_frame', channel=args.channel)
+    parser = SpectrogramParser(audio_conf, cache_path=args.cache_dir, 
+                               normalize='max_frame', channel=args.channel, augment=True)
 
     decoded_output, decoded_offsets = transcribe(args.audio_path, parser, model, decoder, device)
     output = decode_results(model, decoded_output, decoded_offsets)

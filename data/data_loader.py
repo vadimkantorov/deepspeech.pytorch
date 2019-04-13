@@ -1,16 +1,21 @@
 import csv
+import hashlib
+import shutil
+
+import math
 import os
 import random
 import subprocess
+from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import librosa
-import math
 import numpy as np
 import scipy.ndimage
 import scipy.signal
 import torch
 import torchaudio
+import tqdm
 from torch.distributed import get_rank
 from torch.distributed import get_world_size
 from torch.utils.data import DataLoader
@@ -19,6 +24,8 @@ from torch.utils.data.sampler import Sampler
 
 from data.curriculum import Curriculum
 from data.labels import Labels
+
+tq = tqdm.tqdm
 
 windows = {'hamming': scipy.signal.hamming,
            'hann': scipy.signal.hann,
@@ -92,13 +99,13 @@ class NoiseInjection(object):
 
 TEMPOS = {
     0: ('1.0', (1.0, 1.0)),
-    1: ('0.9', (0.85, 0.999)),
-    2: ('1.1', (1.001, 1.15))
+    1: ('0.9', (0.85, 0.95)),
+    2: ('1.1', (1.05, 1.15))
 }
 
 
 class SpectrogramParser(AudioParser):
-    def __init__(self, audio_conf, normalize=False, augment=False, channel=-1):
+    def __init__(self, audio_conf, cache_path, normalize=False, augment=False, channel=-1):
         """
         Parses audio file into spectrogram with optional normalization and various augmentations
         :param audio_conf: Dictionary containing the sample rate, window and the window length/stride in seconds
@@ -113,31 +120,51 @@ class SpectrogramParser(AudioParser):
         self.normalize = normalize
         self.augment = augment
         self.channel = channel
+        self.cache_path = cache_path
         self.noiseInjector = NoiseInjection(audio_conf['noise_dir'], self.sample_rate,
                                             audio_conf['noise_levels']) if audio_conf.get(
             'noise_dir') is not None else None
         self.noise_prob = audio_conf.get('noise_prob')
 
-    def parse_audio(self, audio_path):
-        if self.augment:
-            tempo_name, tempo = TEMPOS[random.randrange(3)]
-        else:
-            tempo_name, tempo = TEMPOS[0]
+    def load_audio_cache(self, audio_path, tempo_id):
+        tempo_name, tempo = TEMPOS[tempo_id]
         chan = 'avg' if self.channel == -1 else str(self.channel)
-        cache_fn = audio_path + '-' + tempo_name + '-' + chan + '.npy'
-        spect = None
+        f_path = Path(audio_path)
+        f_hash = hashlib.sha1(f_path.read_bytes()).hexdigest()[:9]
+        cache_fn = Path(self.cache_path, f_hash[:2],
+                        f_path.name + '.' + f_hash[2:] + '.' + tempo_name + '.' + chan + '.npy')
+        cache_fn.parent.mkdir(parents=True, exist_ok=True)
+        old_cache_fn = audio_path + '-' + tempo_name + '-' + chan + '.npy'
+        if os.path.exists(old_cache_fn) and not os.path.exists(cache_fn):
+            print(f"Moving {old_cache_fn} to {cache_fn}")
+            shutil.move(old_cache_fn, cache_fn)
+        spec = None
         if os.path.exists(cache_fn):
             # print("Loading", cache_fn)
             try:
-                spect = np.load(cache_fn).item()['spect']
+                spec = np.load(cache_fn).item()['spect']
             except Exception as e:
                 import traceback
                 print("Can't load file", cache_fn, 'with exception:', str(e))
                 traceback.print_exc()
+        return cache_fn, spec
+
+    def parse_audio(self, audio_path):
+        if self.augment:
+            tempo_id = random.randrange(3)
+        else:
+            tempo_id = 0
+        cache_fn, spect = self.load_audio_cache(audio_path, tempo_id)
+
+        # FIXME: If one needs to reset cache
+        # spect = None
+
         if spect is None:
-            if self.augment:
-                y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate, channel=self.channel)
+            if self.augment or True:
+                y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
+                                                               channel=self.channel, tempo_range=TEMPOS[tempo_id][1])
             else:
+                # FIXME: We never call this
                 y, sample_rate = load_audio(audio_path, channel=self.channel)
             if self.noiseInjector:
                 add_noise = np.random.binomial(1, self.noise_prob)
@@ -146,11 +173,15 @@ class SpectrogramParser(AudioParser):
 
             spect = self.audio_to_stft(y, sample_rate)
             spect = self.normalize_audio(spect)
-            try:
-                np.save(cache_fn, {'spect': spect})
-            except KeyboardInterrupt:
-                os.unlink(cache_fn)
-            # print("Saved to", cache_fn)
+
+            # FIXME: save to the file, but only if it's for
+            if tempo_id == 0:
+                try:
+                    np.save(str(cache_fn) + '.tmp.npy', {'spect': spect})
+                    os.rename(str(cache_fn) + '.tmp.npy', cache_fn)
+                    # print("Saved to", cache_fn)
+                except KeyboardInterrupt:
+                    os.unlink(cache_fn)
 
         if self.augment and self.normalize == 'max_frame':
             spect.add_(torch.rand(1) - 0.5)
@@ -168,7 +199,12 @@ class SpectrogramParser(AudioParser):
         D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
         spect, phase = librosa.magphase(D)
-        #print(spect.shape)
+        shape = spect.shape
+        if shape[0] < 161:
+            spect.resize((161, *shape[1:]))
+            spect[81:] = spect[80:0:-1]
+        # print(spect.shape)
+        # print(shape, spect.shape)
         return spect[:161]
 
     def normalize_audio(self, spect):
@@ -216,8 +252,11 @@ class SpectrogramParser(AudioParser):
         raise NotImplementedError
 
 
+TS_CACHE = {}
+
+
 class SpectrogramDataset(Dataset, SpectrogramParser):
-    def __init__(self, audio_conf, manifest_filepath, labels, normalize=False, augment=False,
+    def __init__(self, audio_conf, manifest_filepath, cache_path, labels, normalize=False, augment=False,
                  max_items=None, curriculum_filepath=None):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
@@ -258,12 +297,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 self.curriculum = {row['wav']: row for row in rows}
         else:
             self.curriculum = {wav: {'wav': wav,
-                                     'text': self.get_reference_transcript(txt),
+                                     'text': '',
                                      'transcript': '',
                                      'offsets': None,
                                      'cer': 0.999,
-                                     'wer': 0.999} for wav, txt, dur in ids}
-        super(SpectrogramDataset, self).__init__(audio_conf, normalize, augment)
+                                     'wer': 0.999} for wav, txt, dur in tq(ids, desc='Loading')}
+        super(SpectrogramDataset, self).__init__(audio_conf, cache_path, normalize, augment)
 
     def __getitem__(self, index):
         sample = self.ids[index]
@@ -306,10 +345,15 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 writer.writerow(cl)
 
     def parse_transcript(self, transcript_path):
-        if not transcript_path:
-            return self.labels.parse('')
-        with open(transcript_path, 'r', encoding='utf8') as transcript_file:
-            return self.labels.parse(transcript_file.read())
+        global TS_CACHE
+        if transcript_path not in TS_CACHE:
+            if not transcript_path:
+                ts = self.labels.parse('')
+            else:
+                with open(transcript_path, 'r', encoding='utf8') as transcript_file:
+                    ts = self.labels.parse(transcript_file.read())
+            TS_CACHE[transcript_path] = ts
+        return TS_CACHE[transcript_path]
 
     def __len__(self):
         return self.size
@@ -466,6 +510,6 @@ def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.
     low_gain, high_gain = gain_range
     gain_value = np.random.uniform(low=low_gain, high=high_gain)
     audio, sample_rate_ = augment_audio_with_sox(path=path, sample_rate=sample_rate,
-                                   tempo=tempo_value, gain=gain_value, channel=channel)
+                                                 tempo=tempo_value, gain=gain_value, channel=channel)
     assert sample_rate == sample_rate_
     return audio, sample_rate

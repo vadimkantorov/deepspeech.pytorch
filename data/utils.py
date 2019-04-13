@@ -48,7 +48,7 @@ def get_cer_wer(decoder, transcript, reference):
     reference = reference.strip()
     transcript = transcript.strip()
     wer_ref = float(len(reference.split()) or 1)
-    cer_ref = float(len(reference) or 1)
+    cer_ref = float(len(reference.replace(' ','')) or 1)
     if reference == transcript:
         return 0, 0, wer_ref, cer_ref
     else:

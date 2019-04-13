@@ -1,29 +1,25 @@
 import re
 
-from data.num2word import num2words
-from russian_g2p.Transcription import Transcription
-from russian_g2p.Grapheme2Phoneme import Grapheme2Phoneme
+from .num2word import num2words
 
-LATINS = [None, None] + """
-II III IV V VI VII VIII IX X
+LATINS = """II III IV V VI VII VIII IX X
 XI XII XIII XIV XV XVI XVII XVIII XIX XX
 XXI XXII XXIII XXIV XXV XXVI XXVII XXVIII XXIX XXX
 XXXI XXXII XXXIII XXXIV XXXV XXXVI XXXVII XXXVIII XXXIX XXXX
 """.split()
-LATINS_2_NUM = {x: i for i, x in enumerate(LATINS)}
-transcriptor = Transcription()
+LATINS_2_NUM = {x: i for i, x in enumerate(LATINS, 2)}
 
 
 class Labels:
     def __init__(self, labels):
         self.labels = labels
         self.labels_map = {l: i for i, l in enumerate(labels)}
-        self.transcribe = Grapheme2Phoneme().russian_phonemes
-        self.transcribe_map = {l: i for i, l in enumerate(self.transcribe)}
 
     def find_words(self, text, clean=True):
-        text = text.replace('*', ' ').replace('+', ' ').replace('%', 'процент*').replace('ё', 'е').replace('Ё', 'Е')
-        words = re.findall('-?\d+|-?\d+-\w+|\w+', text)
+        text = re.sub(r'([^\W\d]+)2', r'\1', text)
+        text = text.replace('*', ' ').replace('+', ' ').replace('%', 'процент*')
+        text = text.replace('ё', 'е').replace('Ё', 'Е')
+        words = re.findall(r'-?\d+|-?\d+-\w+|\w+', text)
         final = []
         for w in words:
             if w in LATINS_2_NUM:
@@ -37,12 +33,19 @@ class Labels:
                 if w1.isdigit() and not w2.isdigit():
                     w = num2words(w1, ordinal=True) + w2
             if clean:
-                w = ''.join([c for c in w if c in self.labels_map]).strip()
+                w = ''.join([c for c in w if c.upper() in self.labels_map]).strip()
             if w:
                 final.append(w)
         return final
 
     def parse(self, text):
+        # print("Text:", text)
+        # raise Exception('...')
+        if text.startswith('!clean:'):
+            text = text.replace('!clean:', '', 1)
+            transcript = [self.labels_map[x] for x in text.strip()]
+            return transcript
+
         transcript = []
         chars = ' '.join(self.find_words(text)).upper().strip() or '*'
         for c in chars:
@@ -51,17 +54,7 @@ class Labels:
                 code = self.labels_map['2']  # double char
             transcript.append(code)
 
-        return transcript
-
-    def pronounce(self, text):
-        transcript = []
-        text = ' '.join(self.find_words(text, clean=False))
-        for c in transcriptor.transcribe(text) or '*':
-            code = self.transcribe_map[c]
-            if transcript and transcript[-1] == code:
-                code = self.transcribe_map['2']  # double char
-            transcript.append(code)
-
+        # transcript = numpy.array(transcript, dtype=numpy.int16)
         return transcript
 
     def render_transcript(self, codes):

@@ -154,7 +154,11 @@ class SpectrogramParser(AudioParser):
             tempo_id = random.randrange(3)
         else:
             tempo_id = 0
-        cache_fn, spect = self.load_audio_cache(audio_path, tempo_id)
+        
+        if False:#if USE_CACHE:
+            cache_fn, spect = self.load_audio_cache(audio_path, tempo_id)
+        else:
+            cache_fn, spect = None, None
 
         # FIXME: If one needs to reset cache
         # spect = None
@@ -172,16 +176,20 @@ class SpectrogramParser(AudioParser):
                     y = self.noiseInjector.inject_noise(y)
 
             spect = self.audio_to_stft(y, sample_rate)
+            # use sonopy stft
+            # https://github.com/MycroftAI/sonopy/blob/master/sonopy.py#L61
+            # spect = self.audio_to_stft_numpy(y, sample_rate)
             spect = self.normalize_audio(spect)
 
             # FIXME: save to the file, but only if it's for
-            if tempo_id == 0:
-                try:
-                    np.save(str(cache_fn) + '.tmp.npy', {'spect': spect})
-                    os.rename(str(cache_fn) + '.tmp.npy', cache_fn)
-                    # print("Saved to", cache_fn)
-                except KeyboardInterrupt:
-                    os.unlink(cache_fn)
+            if False:#if USE_CACHE:
+                if tempo_id == 0:
+                    try:
+                        np.save(str(cache_fn) + '.tmp.npy', {'spect': spect})
+                        os.rename(str(cache_fn) + '.tmp.npy', cache_fn)
+                        # print("Saved to", cache_fn)
+                    except KeyboardInterrupt:
+                        os.unlink(cache_fn)
 
         if self.augment and self.normalize == 'max_frame':
             spect.add_(torch.rand(1) - 0.5)
@@ -198,7 +206,11 @@ class SpectrogramParser(AudioParser):
         # STFT
         D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
-        spect, phase = librosa.magphase(D)
+        
+        # spect, phase = librosa.magphase(D)
+        # 3x faster
+        spect = np.abs(D)
+        
         shape = spect.shape
         if shape[0] < 161:
             spect.resize((161, *shape[1:]))
@@ -206,7 +218,30 @@ class SpectrogramParser(AudioParser):
         # print(spect.shape)
         # print(shape, spect.shape)
         return spect[:161]
-
+    
+    def audio_to_stft_numpy(self, y, sample_rate):
+        n_fft = int(sample_rate * (self.window_size + 1e-8))
+        win_length = n_fft
+        hop_length = int(sample_rate * (self.window_stride + 1e-8))
+        # print(n_fft, win_length, hop_length)
+        # STFT
+        # D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
+        #                 win_length=win_length, window=self.window)
+        #spect, phase = librosa.magphase(D)
+        
+        # numpy STFT
+        spect = power_spec(y,
+                           window_stride=(win_length,hop_length),
+                           fft_size=n_fft)
+        
+        shape = spect.shape
+        if shape[0] < 161:
+            spect.resize((161, *shape[1:]))
+            spect[81:] = spect[80:0:-1]
+        # print(spect.shape)
+        # print(shape, spect.shape)
+        return spect[:161]    
+    
     def normalize_audio(self, spect):
         # S = log(S+1)
         if self.normalize == 'mean':
@@ -513,3 +548,14 @@ def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.
                                                  tempo=tempo_value, gain=gain_value, channel=channel)
     assert sample_rate == sample_rate_
     return audio, sample_rate
+
+    
+def power_spec(audio: np.ndarray, window_stride=(160, 80), fft_size=512):
+    """Calculates power spectrogram"""
+    frames = chop_array(audio, *window_stride) or np.empty((0, window_stride[0]))
+    fft = np.fft.rfft(frames, n=fft_size)
+    return (fft.real ** 2 + fft.imag ** 2) / fft_size
+
+def chop_array(arr, window_size, hop_size):
+    """chop_array([1,2,3], 2, 1) -> [[1,2], [2,3]]"""
+    return [arr[i - window_size:i] for i in range(window_size, len(arr) + 1, hop_size)]

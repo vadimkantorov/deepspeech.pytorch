@@ -1,23 +1,26 @@
-import argparse
-import datetime
+import os
 import gc
 import json
-import os
 import time
+import tqdm
+import argparse
+import datetime
 
+from enorm.enorm import ENorm
 import torch.distributed as dist
 import torch.utils.data.distributed
-import tqdm
-from enorm.enorm import ENorm
 from warpctc_pytorch import CTCLoss
 
-from data.data_loader import AudioDataLoader, SpectrogramDataset, BucketingSampler, DistributedBucketingSampler
-from data.utils import reduce_tensor, get_cer_wer
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
+from data.utils import reduce_tensor, get_cer_wer
+from data.data_loader_aug import (AudioDataLoader,
+                                  SpectrogramDataset,
+                                  BucketingSampler,
+                                  DistributedBucketingSampler)
+
 
 tq = tqdm.tqdm
-
 
 VISIBLE_DEVICES = os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',') or ['0']
 
@@ -89,6 +92,8 @@ parser.add_argument('--rank', default=0, type=int,
                     help='The rank of this process')
 parser.add_argument('--gpu-rank', default=None,
                     help='If using distributed parallel for multi-gpu, sets the GPU for the process')
+parser.add_argument('--data-parallel', dest='data_parallel', action='store_true',
+                    help='Use data parallel')
 
 torch.manual_seed(123456)
 torch.cuda.manual_seed_all(123456)
@@ -507,7 +512,9 @@ def init_train_set(epoch, from_iter):
                                                     rank=args.rank)
     train_loader = AudioDataLoader(train_dataset,
                                    num_workers=args.num_workers,
-                                   batch_sampler=train_sampler)
+                                   batch_sampler=train_sampler,
+                                   pin_memory=True)
+    
     if (not args.no_shuffle and epoch != 0) or args.no_sorta_grad:
         print("Shuffling batches for the following epochs")
         train_sampler.shuffle(epoch)
@@ -645,6 +652,11 @@ if __name__ == '__main__':
         model = DeepSpeech.load_model_package(package)
         labels = DeepSpeech.get_labels(model)
         audio_conf = DeepSpeech.get_audio_conf(model)
+        
+        # REMOVE LATER
+        # audio_conf['noise_dir'] = '../data/augs/*.wav'
+        # audio_conf['noise_prob'] = 0.1
+        
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
         if not args.finetune:  # Don't want to restart training
@@ -699,11 +711,15 @@ if __name__ == '__main__':
 
     criterion = CTCLoss()
     decoder = GreedyDecoder(labels)
+    
+    print(audio_conf)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, cache_path=args.cache_dir,
                                        manifest_filepath=args.train_manifest,
                                        labels=labels, normalize=args.norm, augment=args.augment,
                                        curriculum_filepath=args.curriculum)
-    test_dataset = SpectrogramDataset(audio_conf=audio_conf, cache_path=args.cache_dir,
+    test_dataset = SpectrogramDataset(audio_conf={**audio_conf,
+                                                  'noise_prob': 0},
+                                      cache_path=args.cache_dir,
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False)
     if args.reverse_sort:
@@ -719,6 +735,9 @@ if __name__ == '__main__':
         device_id = [int(args.gpu_rank)] if args.rank else None
         model = torch.nn.parallel.DistributedDataParallel(model,
                                                           device_ids=device_id)
+    elif args.data_parallel:
+        model = torch.nn.DataParallel(model).to(device)
+        print('Using DP')
 
     print(model)
     print("Number of parameters: %d" % DeepSpeech.get_param_size(model))

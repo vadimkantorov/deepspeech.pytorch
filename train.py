@@ -716,16 +716,19 @@ if __name__ == '__main__':
 
     criterion = CTCLoss()
     decoder = GreedyDecoder(labels)
-    
+    print('Audio conf')
     print(audio_conf)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, cache_path=args.cache_dir,
                                        manifest_filepath=args.train_manifest,
                                        labels=labels, normalize=args.norm, augment=args.augment,
                                        curriculum_filepath=args.curriculum)
+    test_audio_conf = {**audio_conf,
+                       'noise_prob': 0,
+                       'aug_prob_8khz':0}
+    print('Test audio conf')    
+    print(test_audio_conf)
     # no augs on test
-    test_dataset = SpectrogramDataset(audio_conf={**audio_conf,
-                                                  'noise_prob': 0,
-                                                  'aug_prob_8khz':0},
+    test_dataset = SpectrogramDataset(audio_conf=test_audio_conf,
                                       cache_path=args.cache_dir,
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False)

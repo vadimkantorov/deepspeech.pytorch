@@ -224,15 +224,13 @@ class DeepSpeech(nn.Module):
             size = rnn_hidden_size
             bnorm = True
             
-            modules = [
-                *_block(in_channels=161, out_channels=256, kernel_size=7, padding=3, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
-            ]
+            modules = _block(in_channels=161, out_channels=256, kernel_size=7, padding=3, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
             for _ in range(0,self._hidden_layers):
-                modules.append(
-                    *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm, dropout=dropout)
+                modules.extend(
+                    [*_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
                 )
-            modules.append(*_block(in_channels=256, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout))
-            modules.append(*_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm, dropout=dropout))
+            modules.extend([*_block(in_channels=256, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
+            modules.extend([*_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
 
             self.rnns = nn.Sequential(*modules)
             self.fc = nn.Sequential(

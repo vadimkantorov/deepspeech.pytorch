@@ -69,7 +69,7 @@ class PitchShift:
                  sr=22050, noise=None):
         assert len(wav.shape)==1
         if random.random() < self.prob:
-            alpha = random.randint(-self.limit,self.limit)
+            alpha = self.limit * random.uniform(-1, 1)
             wav = librosa.effects.pitch_shift(wav, sr, n_steps=alpha)
         return {'wav':wav,'sr':sr,'noise':noise}   
 

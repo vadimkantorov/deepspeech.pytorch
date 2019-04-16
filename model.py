@@ -5,13 +5,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torch.nn.functional import glu
 from torch.nn.parameter import Parameter
+
 
 supported_rnns = {
     'lstm': nn.LSTM,
     'rnn': nn.RNN,
     'gru': nn.GRU,
-    'cnn': None
+    'cnn': None,
+    'glu_small':None,
+    'glu_large':None,
+    'glu_flexible':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -220,19 +225,39 @@ class DeepSpeech(nn.Module):
             bnorm = True
             
             modules = [
-                *_block(in_channels=161, out_channels=256, kernel_size=7, padding=3, stride=2, bnorm=bnorm, bias=not bnorm)
+                *_block(in_channels=161, out_channels=256, kernel_size=7, padding=3, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
             ]
             for _ in range(0,self._hidden_layers):
                 modules.append(
-                    *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm)
+                    *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm, dropout=dropout)
                 )
-            modules.append(*_block(in_channels=256, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm))
-            modules.append(*_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm))
+            modules.append(*_block(in_channels=256, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout))
+            modules.append(*_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm, dropout=dropout))
 
             self.rnns = nn.Sequential(*modules)
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
+        elif self._rnn_type == 'glu_small':
+            self.rnns = SmallGLU(
+                DotDict({
+                    'input_channels':161
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+        elif self._rnn_type == 'glu_large':
+            self.rnns = LargeGLU(
+                DotDict({
+                    'input_channels':161
+                })
+            )            
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+        elif self._rnn_type == 'glu_flexible':
+            raise NotImplementedError("Customizable GLU not yet implemented") 
         else:
             # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
             rnn_input_size = int(math.floor((sample_rate * window_size + 1e-2) / 2) + 1)
@@ -413,6 +438,108 @@ class DeepSpeech(nn.Module):
     def is_parallel(model):
         return isinstance(model, torch.nn.parallel.DataParallel) or \
                isinstance(model, torch.nn.parallel.DistributedDataParallel)
+
+
+class GLUBlock(nn.Module):
+    def __init__(self,
+                 _in=1,
+                 out=400,
+                 kernel_size=13,
+                 stride=1,
+                 padding=0,
+                 dropout=0.2
+                 ):
+        super(ConvBlock, self).__init__()       
+        
+        self.conv = nn.Conv1d(_in,
+                              out,
+                              kernel_size,
+                              stride=stride,
+                              padding=padding)
+        self.conv = weight_norm(self.conv, dim=1)
+        # self.norm = nn.InstanceNorm1d(out)        
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x):
+        x = self.conv(x)
+        x = glu(x,dim=1)
+        x = self.dropout(x)
+        return x
+
+
+class SmallGLU(nn.Module):
+    def __init__(self,config):
+        super(FixedGatedAcousticModel, self).__init__()       
+        self.layers = nn.Sequential(
+            # whole padding in one place
+            GLUBlock(config.input_channels,200,13,1,6,0.25), # 1          
+            GLUBlock(100,200,3,1,(1),0.25), # 2
+            GLUBlock(100,200,4,1,(2),0.25), # 3
+            GLUBlock(100,250,5,1,(2),0.25), # 4
+            GLUBlock(125,250,6,1,(3),0.25), # 5
+            GLUBlock(125,300,7,1,(3),0.25), # 6
+            GLUBlock(150,350,8,1,(4),0.25), # 7
+            GLUBlock(175,400,9,1,(4),0.25), # 8
+            GLUBlock(200,450,10,1,(5),0.25), # 9
+            GLUBlock(225,500,11,1,(5),0.25), # 10
+            GLUBlock(250,500,12,1,(6),0.25), # 11
+            GLUBlock(250,500,13,1,(6),0.25), # 12
+            GLUBlock(250,600,14,1,(7),0.25), # 13
+            GLUBlock(300,600,15,1,(7),0.25), # 14
+            GLUBlock(300,750,21,1,(10),0.25), # 15
+        )
+
+    def forward(self, x):
+        return self.layers(x)     
+
+
+class LargeGLU(nn.Module):
+    def __init__(self,config):
+        super(FixedGatedAcousticModel, self).__init__()       
+   
+        # in out kw stride padding dropout
+        self.layers = nn.Sequential(
+            # whole padding in one place
+            GLUBlock(config.input_channels,400,13,1,170,0.2), # 1          
+            GLUBlock(200,440,14,1,0,0.214), # 2
+            GLUBlock(220,484,15,1,0,0.228), # 3
+            GLUBlock(242,532,16,1,0,0.245), # 4
+            GLUBlock(266,584,17,1,0,0.262), # 5
+            GLUBlock(292,642,18,1,0,0.280), # 6
+            GLUBlock(321,706,19,1,0,0.300), # 7
+            GLUBlock(353,776,20,1,0,0.321), # 8
+            GLUBlock(388,852,21,1,0,0.347), # 9
+            GLUBlock(426,936,22,1,0,0.368), # 10
+            GLUBlock(468,1028,23,1,0,0.393), # 11
+            GLUBlock(514,1130,24,1,0,0.421), # 12
+            GLUBlock(565,1242,25,1,0,0.450), # 13
+            GLUBlock(621,1366,26,1,0,0.482), # 14
+            GLUBlock(683,1502,27,1,0,0.516), # 15
+            GLUBlock(751,1652,28,1,0,0.552), # 16
+            GLUBlock(826,1816,29,1,0,0.590), # 17
+        )
+
+    def forward(self, x):
+        return self.layers(x)     
+
+
+class DotDict(dict):
+    """
+    a dictionary that supports dot notation 
+    as well as dictionary access notation 
+    usage: d = DotDict() or d = DotDict({'val1':'first'})
+    set attributes: d.val2 = 'second' or d['val2'] = 'second'
+    get attributes: d.val2 or d['val2']
+    """
+    __getattr__ = dict.__getitem__
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+    def __init__(self, dct):
+        for key, value in dct.items():
+            if hasattr(value, 'keys'):
+                value = DotDict(value)
+            self[key] = value    
 
 
 def main():

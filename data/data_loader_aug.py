@@ -247,8 +247,15 @@ class SpectrogramParser(AudioParser):
         if shape[0] < 161:
             spect.resize((161, *shape[1:]))
             spect[81:] = spect[80:0:-1]
+            if sample_rate>=16000:
+                print('Warning - wrong stft size for audio with sampling rate 16 kHz or higher')
         # print(spect.shape)
         # print(shape, spect.shape)
+        if self.aug_prob_8khz>0:
+            if random.random() < self.aug_prob_8khz:
+                # poor man's robustness to poor recording quality
+                # pretend as if audio is 8kHz
+                spect[81:] = 0 
         return spect[:161]
     
     def audio_to_stft_numpy(self, y, sample_rate):
@@ -356,6 +363,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.labels = Labels(labels)
         
         self.aug_type = 0
+        
+        self.aug_prob_8khz = audio_conf.get('aug_prob_8khz')
         self.aug_prob = audio_conf.get('noise_prob')
     
         if self.aug_prob>0:

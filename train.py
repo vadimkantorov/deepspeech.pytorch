@@ -71,6 +71,7 @@ parser.add_argument('--augment', dest='augment', action='store_true', help='Use 
 parser.add_argument('--noise-dir', default=None,
                     help='Directory to inject noise into audio. If default, noise Inject not added')
 parser.add_argument('--noise-prob', default=0.4, type=float, help='Probability of noise being added per sample')
+parser.add_argument('--aug-prob-8khz', default=0, type=float, help='Probability of dropping half of stft frequencies, robustness to 8kHz audio')
 parser.add_argument('--noise-min', default=0.0,
                     help='Minimum noise level to sample from. (1.0 means all noise, not original signal)', type=float)
 parser.add_argument('--noise-max', default=0.5,
@@ -693,7 +694,9 @@ if __name__ == '__main__':
                           window=args.window,
                           noise_dir=args.noise_dir,
                           noise_prob=args.noise_prob,
-                          noise_levels=(args.noise_min, args.noise_max))
+                          noise_levels=(args.noise_min, args.noise_max),
+                          aug_prob_8khz=args.aug_prob_8khz
+                         )
 
         rnn_type = args.rnn_type.lower()
         assert rnn_type in supported_rnns, "rnn_type should be either lstm, rnn or gru"
@@ -717,8 +720,10 @@ if __name__ == '__main__':
                                        manifest_filepath=args.train_manifest,
                                        labels=labels, normalize=args.norm, augment=args.augment,
                                        curriculum_filepath=args.curriculum)
+    # no augs on test
     test_dataset = SpectrogramDataset(audio_conf={**audio_conf,
-                                                  'noise_prob': 0},
+                                                  'noise_prob': 0,
+                                                  'aug_prob_8khz':0},
                                       cache_path=args.cache_dir,
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False)

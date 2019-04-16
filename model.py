@@ -172,8 +172,9 @@ DEBUG = 1
 
 
 class DeepSpeech(nn.Module):
-    def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=5, audio_conf=None,
-                 bidirectional=True, context=20, bnm=0.1):
+    def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=6, audio_conf=None,
+                 bidirectional=True, context=20, bnm=0.1,
+                 dropout=0):
         super(DeepSpeech, self).__init__()
 
         # model metadata needed for serialization/deserialization
@@ -203,29 +204,32 @@ class DeepSpeech(nn.Module):
         ))
 
         if self._rnn_type == 'cnn':
-            def _block(in_channels, out_channels, kernel_size, padding=0, stride=1, bnorm=False, bias=True):
+            def _block(in_channels, out_channels, kernel_size, padding=0, stride=1, bnorm=False, bias=True,
+                       dropout=0):
                 res = [nn.Conv1d(in_channels=in_channels, out_channels=out_channels,
                                  kernel_size=kernel_size, padding=padding, stride=stride, bias=bias)]
 
                 if bnorm:
                     res.append(nn.BatchNorm1d(out_channels, momentum=bnm))
                 res.append(nn.ReLU(inplace=True))
+                if dropout>0:
+                    res.append(nn.Dropout(dropout))
                 return res
 
             size = rnn_hidden_size
             bnorm = True
-            self.rnns = nn.Sequential(
-                *_block(in_channels=161, out_channels=256, kernel_size=7, padding=3, stride=2, bnorm=bnorm,
-                        bias=not bnorm),
-                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=256, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm),
-                *_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm),
-            )
+            
+            modules = [
+                *_block(in_channels=161, out_channels=256, kernel_size=7, padding=3, stride=2, bnorm=bnorm, bias=not bnorm)
+            ]
+            for _ in range(0,self._hidden_layers):
+                modules.append(
+                    *_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm)
+                )
+            modules.append(*_block(in_channels=256, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm))
+            modules.append(*_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm))
+
+            self.rnns = nn.Sequential(*modules)
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )

@@ -375,20 +375,20 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             if self.aug_type==0:
                 # all augs
                 aug_list = [
-                    AddNoise(limit=0.05, # noise is scaled to 0.05
+                    AddNoise(limit=0.2, # noise is scaled to 0.2 (0.05)
                              prob=self.aug_prob), 
                     ChangeAudioSpeed(limit=0.15,
                                      prob=self.aug_prob,
                                      sr=audio_conf.get('sample_rate'),
                                      max_duration=MAX_DURATION_AUG),
                     AudioDistort(limit=0.05, # max distortion clipping 0.05
-                                 prob=self.aug_prob//2), 
+                                 prob=self.aug_prob), # /2
                     Shift(limit=audio_conf.get('sample_rate')*2,
                           prob=self.aug_prob,
                           sr=audio_conf.get('sample_rate'),
                           max_duration=MAX_DURATION_AUG), # shift 2 seconds max
                     PitchShift(limit=2, #  half-steps
-                               prob=self.aug_prob//2) 
+                               prob=self.aug_prob)  # /2
                 ]
             elif self.aug_type==1:
                 # only spatial shifts

@@ -47,6 +47,7 @@ parser.add_argument('--dropout', default=0, type=float, help='Fixed dropout for 
 parser.add_argument('--epochs', default=70, type=int, help='Number of training epochs')
 parser.add_argument('--cuda', dest='cuda', action='store_true', help='Use cuda to train model')
 parser.add_argument('--lr', '--learning-rate', default=3e-4, type=float, help='initial learning rate')
+parser.add_argument('--optimizer', default='sgd', help='Optimizer - sgd or adam')
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--batch-norm-momentum', default=0.1, type=float, help='BatchNorm momentum')
 parser.add_argument('--max-norm', default=100, type=int, help='Norm cutoff to prevent explosion of gradients')
@@ -130,10 +131,15 @@ class AverageMeter(object):
 def build_optimizer(args_, parameters_):
     # import aggmo
     # return aggmo.AggMo(model.parameters(), args_.lr, betas=[0, 0.6, 0.9])
-    return torch.optim.SGD(parameters_, lr=args_.lr,
-                           momentum=args_.momentum, nesterov=True)
+    if args_.optimizer=='sgd':
+        print('Using SGD')
+        return torch.optim.SGD(parameters_, lr=args_.lr,
+                               momentum=args_.momentum, nesterov=True)
+    elif args_.optimizer=='adam':
+        print('Using ADAM')
+        return torch.optim.Adam(parameters_, lr=args_.lr)   
 
-
+    
 viz = None
 tensorboard_writer = None
 
@@ -712,7 +718,7 @@ if __name__ == '__main__':
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
 
-    enorm = ENorm(model.named_parameters(), optimizer, c=1)
+    # enorm = ENorm(model.named_parameters(), optimizer, c=1)
 
     criterion = CTCLoss()
     decoder = GreedyDecoder(labels)

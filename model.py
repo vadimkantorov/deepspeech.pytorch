@@ -193,6 +193,7 @@ class DeepSpeech(nn.Module):
         self._labels = labels
         self._bidirectional = bidirectional
         self._bnm = bnm
+        self._dropout=dropout
 
         sample_rate = self._audio_conf.get("sample_rate", 16000)
         window_size = self._audio_conf.get("window_size", 0.02)
@@ -363,7 +364,8 @@ class DeepSpeech(nn.Module):
                     audio_conf=package['audio_conf'],
                     rnn_type=package['rnn_type'],
                     bnm=package.get('bnm', 0.1),
-                    bidirectional=package.get('bidirectional', True))
+                    bidirectional=package.get('bidirectional', True),
+                    dropout=package.get('dropout', 0))
         model.load_state_dict(package['state_dict'])
         return model
 
@@ -382,6 +384,7 @@ class DeepSpeech(nn.Module):
             'state_dict': model.state_dict(),
             'bnm': model._bnm,
             'bidirectional': model._bidirectional,
+            'dropout':model._dropout
         }
         if optimizer is not None:
             package['optim_dict'] = optimizer.state_dict()

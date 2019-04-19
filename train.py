@@ -657,7 +657,7 @@ if __name__ == '__main__':
     if args.continue_from:  # Starting from previous model
         print("Loading checkpoint model %s" % args.continue_from)
         package = torch.load(args.continue_from, map_location=lambda storage, loc: storage)
-        print(package.keys())
+        # package['dropout']=0.2
         model = DeepSpeech.load_model_package(package)
         labels = DeepSpeech.get_labels(model)
         audio_conf = DeepSpeech.get_audio_conf(model)

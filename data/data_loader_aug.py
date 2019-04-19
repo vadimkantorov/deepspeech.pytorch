@@ -405,7 +405,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                                      prob=self.aug_prob,
                                      sr=audio_conf.get('sample_rate'),
                                      max_duration=MAX_DURATION_AUG),                    
-                    PitchShift(limit=2,prob=self.aug_prob//2) #  half-steps
+                    PitchShift(limit=2,prob=self.aug_prob) #  half-steps
                 ]
             elif aug_type==3:
                 # adding noise
@@ -413,7 +413,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     AddNoise(limit=0.05, # noise is scaled to 0.05
                              prob=self.aug_prob), 
                     AudioDistort(limit=0.05, # max clipping 0.05
-                                 prob=self.aug_prob//2), 
+                                 prob=self.aug_prob), 
                 ]                
 
             self.augs = OneOf(

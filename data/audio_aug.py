@@ -25,7 +25,7 @@ class ChangeAudioSpeed:
 class Shift:
     def __init__(self, limit=512, prob=0.5,
                  max_duration=10, sr=16000):
-        self.limit = limit
+        self.limit = int(limit)
         self.prob = prob
         self.max_duration = max_duration * sr
 

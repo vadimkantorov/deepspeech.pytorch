@@ -387,7 +387,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                                      max_duration=MAX_DURATION_AUG),
                     AudioDistort(limit=0.05, # max distortion clipping 0.05
                                  prob=self.aug_prob), # /2
-                    Shift(limit=audio_conf.get('sample_rate')*2,
+                    Shift(limit=audio_conf.get('sample_rate')*0.5,
                           prob=self.aug_prob,
                           sr=audio_conf.get('sample_rate'),
                           max_duration=MAX_DURATION_AUG), # shift 2 seconds max

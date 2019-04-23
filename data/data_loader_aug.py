@@ -28,7 +28,7 @@ from torch.distributed import get_world_size
 from data.labels import Labels
 from data.curriculum import Curriculum
 from data.audio_aug import *
-
+from data.spectrogram_aug import *
 
 tq = tqdm.tqdm
 MAX_DURATION_AUG = 10        
@@ -255,6 +255,9 @@ class SpectrogramParser(AudioParser):
                 print('Warning - wrong stft size for audio with sampling rate 16 kHz or higher')
         # print(spect.shape)
         # print(shape, spect.shape)
+        if self.aug_prob_spect>0:
+            spect = self.augs_spect(spect)
+
         if self.aug_prob_8khz>0:
             if random.random() < self.aug_prob_8khz:
                 # poor man's robustness to poor recording quality
@@ -370,6 +373,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         
         self.aug_prob_8khz = audio_conf.get('aug_prob_8khz')
         self.aug_prob = audio_conf.get('noise_prob')
+        self.aug_prob_spect = audio_conf.get('aug_prob_spect')
     
         if self.aug_prob>0:
             self.aug_samples = glob(audio_conf.get('noise_dir'))            
@@ -426,6 +430,22 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         else:
             self.augs = None
     
+        if self.aug_prob_spect>0:
+            aug_list = [
+                FrequencyMask(bands=2,
+                              prob=self.aug_prob_spect,
+                              dropout_width=20),
+                TimeMask(bands=2,
+                         prob=self.aug_prob_spect,
+                         dropout_length=50,
+                         max_dropout_ratio=.15)               
+            ]            
+            self.augs_spect = SOneOf(
+                    aug_list, prob=self.aug_prob
+            )
+        else:
+            self.augs_spect = None
+            
         if curriculum_filepath:
             with open(curriculum_filepath, newline='') as f:
                 reader = csv.DictReader(f)

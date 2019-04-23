@@ -376,6 +376,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
     
         if self.aug_prob>0:
+            print('Using sound augs!')            
             self.aug_samples = glob(audio_conf.get('noise_dir'))            
             # plain vanilla aug pipeline
             # the probability of harder augs is lower
@@ -431,6 +432,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             self.augs = None
     
         if self.aug_prob_spect>0:
+            print('Using spectrogram augs!')
             aug_list = [
                 FrequencyMask(bands=2,
                               prob=self.aug_prob_spect,

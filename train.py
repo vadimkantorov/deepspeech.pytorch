@@ -33,6 +33,8 @@ parser.add_argument('--val-manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/val_manifest.csv')
 parser.add_argument('--curriculum', metavar='DIR',
                     help='path to curriculum file', default='')
+parser.add_argument('--use-curriculum',  action='store_true', default=False)
+parser.add_argument('--curriculum-ratio',  action='store_true', default=0.5, type=float)
 parser.add_argument('--sample-rate', default=16000, type=int, help='Sample rate')
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in data-loading')
@@ -509,7 +511,9 @@ class Trainer:
 
 def init_train_set(epoch, from_iter):
     #train_dataset.set_curriculum_epoch(epoch, sample=True)
-    train_dataset.set_curriculum_epoch(epoch, sample=False)
+    train_dataset.set_curriculum_epoch(epoch,
+                                       sample=args.use_curriculum,
+                                       sample_size=args.curriculum_ratio)
     global train_loader, train_sampler
     if not args.distributed:
         train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)

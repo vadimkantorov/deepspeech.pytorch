@@ -30,6 +30,8 @@ from data.curriculum import Curriculum
 from data.audio_aug import *
 from data.spectrogram_aug import *
 
+from scipy.io import wavfile
+
 tq = tqdm.tqdm
 MAX_DURATION_AUG = 10        
 
@@ -53,8 +55,22 @@ def load_audio(path, channel=-1):
 
 
 def load_audio_norm(path, channel=-1):
-    sound, sample_rate = torchaudio.load(path, normalization=lambda x: torch.abs(x).max())
-    sound = sound.numpy().T
+    # sound, sample_rate = torchaudio.load(path, normalization=lambda x: torch.abs(x).max())
+    # sound = sound.numpy().T
+    
+    # use scipy, as all files are wavs for now
+    # Fix https://github.com/pytorch/audio/issues/14 later
+    sample_rate, sound = wavfile.read(path)
+    
+    try:
+        abs_max = np.abs(sound).max()
+        sound = sound.astype('float32')
+        if abs_max>0:
+            sound *= 1/abs_max
+    except:
+        print(path)
+        raise ValueError('Mow')
+    
     if len(sound.shape) > 1:
         if sound.shape[1] == 1:
             sound = sound.squeeze()
@@ -478,10 +494,16 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             return self.get_reference_transcript(transcript_path), 0.999
         return self.curriculum[audio_path]['text'], self.curriculum[audio_path]['cer']
 
-    def set_curriculum_epoch(self, epoch, sample=False):
+    def set_curriculum_epoch(self, epoch,
+                             sample=False,
+                             sample_size=0.5):
         if sample:
             self.ids = list(
-                Curriculum.sample(self.all_ids, self.get_curriculum_info, epoch=epoch, min=len(self.all_ids) / 2))
+                Curriculum.sample(self.all_ids,
+                                  self.get_curriculum_info,
+                                  epoch=epoch,
+                                  min=len(self.all_ids) * sample_size)
+            )
         else:
             self.ids = self.all_ids.copy()
         np.random.seed(epoch)

@@ -29,6 +29,8 @@ parser.add_argument('--train-manifest', metavar='DIR',
                     help='path to train manifest csv', default='data/train_manifest.csv')
 parser.add_argument('--cache-dir', metavar='DIR',
                     help='path to save temp audio', default='data/cache/')
+parser.add_argument('--train-val-manifest', metavar='DIR',
+                    help='path to train validation manifest csv', default='')
 parser.add_argument('--val-manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/val_manifest.csv')
 parser.add_argument('--curriculum', metavar='DIR',
@@ -386,9 +388,9 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
         checkpoint_plots.wer_results[checkpoint] = val_wer
         checkpoint_plots.cer_results[checkpoint] = val_cer
         checkpoint_plots.epochs[checkpoint] = checkpoint + 1
-
+        
         plots.plot_progress(epoch, train_loss, train_cer, train_wer)
-        checkpoint_plots.plot_progress(checkpoint, val_loss, val_cer, val_wer)
+        checkpoint_plots.plot_progress(checkpoint, val_loss, val_cer, val_wer)            
 
         if args.checkpoint_anneal != 1.0:
             global lr_plots
@@ -398,9 +400,90 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
             lr_plots.loss_results[zero_loss] = val_loss
             lr_plots.epochs[zero_loss] = get_lr()
             lr_plots.plot_progress(checkpoint, val_loss, val_cer, val_wer)
+    
+    # only if trainval manifest provided
+    # separate scope not to mess with general flow too much
+    if args.train_val_manifest != '':
+        calculate_trainval_quality_metrics(checkpoint,
+                                           trainval_loader,
+                                           trainval_checkpoint_plots)
+            
     return val_wer, val_cer
 
 
+def calculate_trainval_quality_metrics(checkpoint,
+                                       loader,
+                                       plots_handle):
+    val_cer_sum, val_wer_sum, val_loss_sum = 0, 0, 0
+    num_chars, num_words, num_losses = 0, 0, 0
+    model.eval()    
+    with torch.no_grad():
+        for i, data in tq(enumerate(loader), total=len(loader)):
+            inputs, targets, filenames, input_percentages, target_sizes = data
+            input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
+
+            # unflatten targets
+            split_targets = []
+            offset = 0
+            for size in target_sizes:
+                split_targets.append(targets[offset:offset + size])
+                offset += size
+
+            inputs = inputs.to(device)
+
+            logits, probs, output_sizes = model(inputs, input_sizes)
+
+            loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
+            loss = loss / inputs.size(0)  # average the loss by minibatch
+            inf = float("inf")
+            if args.distributed:
+                loss_value = reduce_tensor(loss, args.world_size).item()
+            else:
+                loss_value = loss.item()
+            if loss_value == inf or loss_value == -inf:
+                print("WARNING: received an inf loss, setting loss value to 1000")
+                loss_value = 1000
+            loss_value = float(loss_value)
+            val_loss_sum = (val_loss_sum * 0.998 + loss_value * 0.002)  # discount earlier losses
+            val_loss_sum += loss_value
+            num_losses += 1
+
+            decoded_output, _ = decoder.decode(probs, output_sizes)
+            target_strings = decoder.convert_to_strings(split_targets)
+            for x in range(len(target_strings)):
+                transcript, reference = decoded_output[x][0], target_strings[x][0]
+                wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
+                if x < 1:
+                    print("CER: {:6.2f}% WER: {:6.2f}% Filename: {}".format(cer/cer_ref*100, wer/wer_ref*100, filenames[x]))
+                    print('Reference:', reference, '\nTranscript:', transcript)
+
+                val_wer_sum += wer
+                val_cer_sum += cer
+                num_words += wer_ref
+                num_chars += cer_ref
+
+            del inputs, targets, input_percentages, target_sizes
+            del logits, probs, output_sizes, input_sizes
+            del split_targets, loss
+
+            if args.cuda:
+                torch.cuda.synchronize()
+
+        val_wer = 100 * val_wer_sum / num_words
+        val_cer = 100 * val_cer_sum / num_chars
+        print('TrainVal Summary Epoch: [{0}]\t'
+              'Average WER {wer:.3f}\t'
+              'Average CER {cer:.3f}\t'.format(epoch + 1, wer=val_wer, cer=val_cer))
+
+        val_loss = val_loss_sum / num_losses
+
+        plots_handle.loss_results[checkpoint] = val_loss
+        plots_handle.wer_results[checkpoint] = val_wer
+        plots_handle.cer_results[checkpoint] = val_cer
+        plots_handle.epochs[checkpoint] = checkpoint + 1 
+        plots_handle.plot_progress(checkpoint, val_loss, val_cer, val_wer)
+
+    
 class Trainer:
     def __init__(self):
         self.end = time.time()
@@ -573,6 +656,9 @@ def train(from_epoch, from_iter, from_checkpoint):
                                                     checkpoint_loss_results=checkpoint_plots.loss_results,
                                                     checkpoint_wer_results=checkpoint_plots.wer_results,
                                                     checkpoint_cer_results=checkpoint_plots.cer_results,
+                                                    trainval_checkpoint_loss_results=trainval_checkpoint_plots.loss_results,
+                                                    trainval_checkpoint_wer_results=trainval_checkpoint_plots.wer_results,
+                                                    trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results,                                                        
                                                     avg_loss=total_loss / num_losses), file_path)
                     train_dataset.save_curriculum(file_path + '.csv')
 
@@ -612,6 +698,9 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             checkpoint_loss_results=checkpoint_plots.loss_results,
                                             checkpoint_wer_results=checkpoint_plots.wer_results,
                                             checkpoint_cer_results=checkpoint_plots.cer_results,
+                                            trainval_checkpoint_loss_results=trainval_checkpoint_plots.loss_results,
+                                            trainval_checkpoint_wer_results=trainval_checkpoint_plots.wer_results,
+                                            trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results, 
                                             ), file_path)
             train_dataset.save_curriculum(file_path + '.csv')
 
@@ -631,6 +720,9 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             checkpoint_loss_results=checkpoint_plots.loss_results,
                                             checkpoint_wer_results=checkpoint_plots.wer_results,
                                             checkpoint_cer_results=checkpoint_plots.cer_results,
+                                            trainval_checkpoint_loss_results=trainval_checkpoint_plots.loss_results,
+                                            trainval_checkpoint_wer_results=trainval_checkpoint_plots.wer_results,
+                                            trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results,                                             
                                             ),
                        args.model_path)
             train_dataset.save_curriculum(args.model_path + '.csv')
@@ -656,6 +748,14 @@ if __name__ == '__main__':
 
     plots = PlotWindow(args.id, 'train loss, epochs', log_y=True)
     checkpoint_plots = PlotWindow(args.id, 'val loss, checkpoints', log_y=True)
+    if args.train_val_manifest != '':
+        trainval_checkpoint_plots = PlotWindow(args.id, 'train val loss, checkpoints', log_y=True)
+    else:
+        # set all properties to None for easy backwards compatibility
+        trainval_checkpoint_plots = t = type('test', (object,), {})()
+        trainval_checkpoint_plots.loss_results = None
+        trainval_checkpoint_plots.wer_results = None
+        trainval_checkpoint_plots.cer_results = None
     lr_plots = LRPlotWindow(args.id, 'LRFinder', log_x=True)
 
     total_avg_loss, start_epoch, start_iter, start_checkpoint = 0, 0, 0, 0
@@ -697,6 +797,14 @@ if __name__ == '__main__':
                 plots.plot_history(start_epoch)
             if package.get('checkpoint_cer_results') is not None and start_checkpoint > 0:
                 checkpoint_plots.plot_history(start_checkpoint)
+
+            if args.train_val_manifest != '':
+                if package.get('trainval_checkpoint_cer_results') is not None:
+                    trainval_checkpoint_plots.loss_results = package.get('trainval_checkpoint_loss_results', torch.Tensor(10000))
+                    trainval_checkpoint_plots.cer_results = package.get('trainval_checkpoint_cer_results', torch.Tensor(10000))
+                    trainval_checkpoint_plots.wer_results = package.get('trainval_checkpoint_wer_results', torch.Tensor(10000))
+                if package.get('trainval_checkpoint_cer_results') is not None and start_checkpoint > 0:
+                    trainval_checkpoint_plots.plot_history(start_checkpoint)                
     else:
         with open(args.labels_path) as label_file:
             labels = str(''.join(json.load(label_file)))
@@ -746,6 +854,16 @@ if __name__ == '__main__':
                                       cache_path=args.cache_dir,
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False)
+    
+    # if file is specified
+    # separate train validation wo domain shift 
+    # also wo augs
+    if args.train_val_manifest != '':
+        trainval_dataset = SpectrogramDataset(audio_conf=test_audio_conf,
+                                              cache_path=args.cache_dir,
+                                              manifest_filepath=args.train_val_manifest,
+                                              labels=labels, normalize=args.norm, augment=False)    
+    
     if args.reverse_sort:
         # XXX: A hack to test max memory load.
         train_dataset.ids.reverse()
@@ -753,6 +871,12 @@ if __name__ == '__main__':
     test_loader = AudioDataLoader(test_dataset,
                                   batch_size=args.batch_size,
                                   num_workers=args.num_workers)
+    
+    if args.train_val_manifest != '':
+        trainval_loader = AudioDataLoader(trainval_dataset,
+                                          batch_size=args.batch_size,
+                                          num_workers=args.num_workers)        
+        
 
     model = model.to(device)
     if args.distributed:

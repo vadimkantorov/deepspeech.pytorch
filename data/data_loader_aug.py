@@ -498,6 +498,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                              sample=False,
                              sample_size=0.5):
         if sample:
+            print('Getting dataset sample, size {}'.format(int(len(self.all_ids) * sample_size)))
             self.ids = list(
                 Curriculum.sample(self.all_ids,
                                   self.get_curriculum_info,

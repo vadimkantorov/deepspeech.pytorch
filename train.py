@@ -36,7 +36,7 @@ parser.add_argument('--val-manifest', metavar='DIR',
 parser.add_argument('--curriculum', metavar='DIR',
                     help='path to curriculum file', default='')
 parser.add_argument('--use-curriculum',  action='store_true', default=False)
-parser.add_argument('--curriculum-ratio',  action='store_true', default=0.5, type=float)
+parser.add_argument('--curriculum-ratio', default=0.5, type=float)
 parser.add_argument('--sample-rate', default=16000, type=int, help='Sample rate')
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in data-loading')
@@ -405,6 +405,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     # separate scope not to mess with general flow too much
     if args.train_val_manifest != '':
         calculate_trainval_quality_metrics(checkpoint,
+                                           epoch,
                                            trainval_loader,
                                            trainval_checkpoint_plots)
             
@@ -412,6 +413,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
 
 
 def calculate_trainval_quality_metrics(checkpoint,
+                                       epoch,
                                        loader,
                                        plots_handle):
     val_cer_sum, val_wer_sum, val_loss_sum = 0, 0, 0

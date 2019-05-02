@@ -240,7 +240,8 @@ class DeepSpeech(nn.Module):
         elif self._rnn_type == 'glu_small':
             self.rnns = SmallGLU(
                 DotDict({
-                    'input_channels':161
+                    'input_channels':161,
+                    'layer_num':self._hidden_layers,
                 })
             )
             self.fc = nn.Sequential(
@@ -476,9 +477,8 @@ class GLUBlock(nn.Module):
 
 class SmallGLU(nn.Module):
     def __init__(self,config):
-        super(FixedGatedAcousticModel, self).__init__()       
-        self.layers = nn.Sequential(
-            # whole padding in one place
+        super(SmallGLU, self).__init__()   
+        layer_list = [
             GLUBlock(config.input_channels,200,13,1,6,0.25), # 1          
             GLUBlock(100,200,3,1,(1),0.25), # 2
             GLUBlock(100,200,4,1,(2),0.25), # 3
@@ -493,8 +493,9 @@ class SmallGLU(nn.Module):
             GLUBlock(250,500,13,1,(6),0.25), # 12
             GLUBlock(250,600,14,1,(7),0.25), # 13
             GLUBlock(300,600,15,1,(7),0.25), # 14
-            GLUBlock(300,750,21,1,(10),0.25), # 15
-        )
+            GLUBlock(300,750,21,1,(10),0.25), # 15        
+        ]
+        self.layers = nn.Sequential(*layer_list[:config.layer_num])
 
     def forward(self, x):
         return self.layers(x)     
@@ -502,7 +503,7 @@ class SmallGLU(nn.Module):
 
 class LargeGLU(nn.Module):
     def __init__(self,config):
-        super(FixedGatedAcousticModel, self).__init__()       
+        super(LargeGLU, self).__init__()       
    
         # in out kw stride padding dropout
         self.layers = nn.Sequential(

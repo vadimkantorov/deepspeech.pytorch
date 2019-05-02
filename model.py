@@ -297,7 +297,7 @@ class DeepSpeech(nn.Module):
         lengths = lengths.cpu().int()
         output_lengths = self.get_seq_lens(lengths).cuda()
 
-        if self._rnn_type == 'cnn':
+        if self._rnn_type in ['cnn','glu_small','glu_large']:
             x = x.squeeze(1)
             x = self.rnns(x)
             x = self.fc(x)

@@ -457,7 +457,7 @@ class GLUBlock(nn.Module):
                  padding=0,
                  dropout=0.2
                  ):
-        super(ConvBlock, self).__init__()       
+        super(GLUBlock, self).__init__()       
         
         self.conv = nn.Conv1d(_in,
                               out,

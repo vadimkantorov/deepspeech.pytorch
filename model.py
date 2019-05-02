@@ -481,7 +481,7 @@ class GLUBlock(nn.Module):
 class SmallGLU(nn.Module):
     def __init__(self,config):
         super(SmallGLU, self).__init__()   
-        layer_outputs = [100,100,125,125,150,175,200,
+        layer_outputs = [100,100,100,125,125,150,175,200,
                          225,250,250,250,300,300,375]
         layer_list = [
             GLUBlock(config.input_channels,200,13,1,6,0.25), # 1          

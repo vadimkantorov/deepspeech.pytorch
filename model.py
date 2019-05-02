@@ -239,13 +239,14 @@ class DeepSpeech(nn.Module):
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
         elif self._rnn_type == 'glu_small':
-            size = rnn_hidden_size
             self.rnns = SmallGLU(
                 DotDict({
                     'input_channels':161,
                     'layer_num':self._hidden_layers,
                 })
             )
+            # last GLU layer size
+            size = self.rnns.last_channels            
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
@@ -480,6 +481,8 @@ class GLUBlock(nn.Module):
 class SmallGLU(nn.Module):
     def __init__(self,config):
         super(SmallGLU, self).__init__()   
+        layer_outputs = [100,100,125,125,150,175,200,
+                         225,250,250,250,300,300,375]
         layer_list = [
             GLUBlock(config.input_channels,200,13,1,6,0.25), # 1          
             GLUBlock(100,200,3,1,(1),0.25), # 2
@@ -498,6 +501,7 @@ class SmallGLU(nn.Module):
             GLUBlock(300,750,21,1,(10),0.25), # 15        
         ]
         self.layers = nn.Sequential(*layer_list[:config.layer_num])
+        self.last_channels = layer_outputs[config.layer_num]
 
     def forward(self, x):
         return self.layers(x)     
@@ -506,7 +510,8 @@ class SmallGLU(nn.Module):
 class LargeGLU(nn.Module):
     def __init__(self,config):
         super(LargeGLU, self).__init__()       
-   
+        layer_outputs = [200,220,242,266,292,321,353,388,426,
+                         468,514,565,621,683,751,826,908]
         # in out kw stride padding dropout
         self.layers = nn.Sequential(
             # whole padding in one place
@@ -528,6 +533,7 @@ class LargeGLU(nn.Module):
             GLUBlock(751,1652,28,1,0,0.552), # 16
             GLUBlock(826,1816,29,1,0,0.590), # 17
         )
+        self.last_channels = layer_outputs[config.layer_num]        
 
     def forward(self, x):
         return self.layers(x)     

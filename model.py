@@ -239,6 +239,7 @@ class DeepSpeech(nn.Module):
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
         elif self._rnn_type == 'glu_small':
+            size = rnn_hidden_size
             self.rnns = SmallGLU(
                 DotDict({
                     'input_channels':161,

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.functional import glu
 from torch.nn.parameter import Parameter
+from torch.nn.utils import weight_norm
 
 
 supported_rnns = {

@@ -501,7 +501,7 @@ class SmallGLU(nn.Module):
             GLUBlock(300,750,21,1,(10),0.25), # 15        
         ]
         self.layers = nn.Sequential(*layer_list[:config.layer_num])
-        self.last_channels = layer_outputs[config.layer_num]
+        self.last_channels = layer_outputs[config.layer_num-1]
 
     def forward(self, x):
         return self.layers(x)     
@@ -533,7 +533,7 @@ class LargeGLU(nn.Module):
             GLUBlock(751,1652,28,1,0,0.552), # 16
             GLUBlock(826,1816,29,1,0,0.590), # 17
         )
-        self.last_channels = layer_outputs[config.layer_num]        
+        self.last_channels = layer_outputs[config.layer_num-1]        
 
     def forward(self, x):
         return self.layers(x)     

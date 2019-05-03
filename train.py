@@ -360,7 +360,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                     print("CER: {:6.2f}% WER: {:6.2f}% Filename: {}".format(cer/cer_ref*100, wer/wer_ref*100, filenames[x]))
                     print('Reference:', reference, '\nTranscript:', transcript)
                 
-                times_used = test_dataset['curriculum']['times_used']+1
+                times_used = test_dataset.curriculum[filenames[x]]['times_used']+1
                 test_dataset.update_curriculum(filenames[x],
                                                reference, transcript,
                                                None,
@@ -465,7 +465,7 @@ def calculate_trainval_quality_metrics(checkpoint,
                     print("CER: {:6.2f}% WER: {:6.2f}% Filename: {}".format(cer/cer_ref*100, wer/wer_ref*100, filenames[x]))
                     print('Reference:', reference, '\nTranscript:', transcript)
                     
-                times_used = trainval_dataset['curriculum']['times_used']+1
+                times_used = trainval_dataset.curriculum[filenames[x]]['times_used']+1
                 trainval_dataset.update_curriculum(filenames[x],
                                                    reference, transcript,
                                                    None,
@@ -565,7 +565,7 @@ class Trainer:
             transcript, reference = decoded_output[x][0], target_strings[x][0]
             wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
             # accessing dict should be fast
-            times_used = train_dataset['curriculum']['times_used']+1
+            times_used = train_dataset.curriculum[filenames[x]]['times_used']+1
             train_dataset.update_curriculum(filenames[x],
                                             reference, transcript,
                                             None,

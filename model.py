@@ -243,6 +243,8 @@ class DeepSpeech(nn.Module):
                 DotDict({
                     'input_channels':161,
                     'layer_num':self._hidden_layers,
+                    'bnm':bnm,
+                    'dropout':dropout,
                 })
             )
             # last GLU layer size
@@ -458,7 +460,8 @@ class GLUBlock(nn.Module):
                  kernel_size=13,
                  stride=1,
                  padding=0,
-                 dropout=0.2
+                 dropout=0.2,
+                 bnm=0.1
                  ):
         super(GLUBlock, self).__init__()       
         
@@ -467,13 +470,16 @@ class GLUBlock(nn.Module):
                               kernel_size,
                               stride=stride,
                               padding=padding)
-        self.conv = weight_norm(self.conv, dim=1)
-        # self.norm = nn.InstanceNorm1d(out)        
+        # self.conv = weight_norm(self.conv, dim=1)
+        # self.norm = nn.InstanceNorm1d(out)    
+        self.norm = nn.BatchNorm1d(out//2,
+                                   momentum=bnm)        
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
         x = self.conv(x)
         x = glu(x,dim=1)
+        x = self.norm(x)
         x = self.dropout(x)
         return x
 
@@ -481,24 +487,26 @@ class GLUBlock(nn.Module):
 class SmallGLU(nn.Module):
     def __init__(self,config):
         super(SmallGLU, self).__init__()   
+        bnm = config.bnm
+        dropout = config.dropout 
         layer_outputs = [100,100,100,125,125,150,175,200,
                          225,250,250,250,300,300,375]
         layer_list = [
-            GLUBlock(config.input_channels,200,13,1,6,0.25), # 1          
-            GLUBlock(100,200,3,1,(1),0.25), # 2
-            GLUBlock(100,200,4,1,(2),0.25), # 3
-            GLUBlock(100,250,5,1,(2),0.25), # 4
-            GLUBlock(125,250,6,1,(3),0.25), # 5
-            GLUBlock(125,300,7,1,(3),0.25), # 6
-            GLUBlock(150,350,8,1,(4),0.25), # 7
-            GLUBlock(175,400,9,1,(4),0.25), # 8
-            GLUBlock(200,450,10,1,(5),0.25), # 9
-            GLUBlock(225,500,11,1,(5),0.25), # 10
-            GLUBlock(250,500,12,1,(6),0.25), # 11
-            GLUBlock(250,500,13,1,(6),0.25), # 12
-            GLUBlock(250,600,14,1,(7),0.25), # 13
-            GLUBlock(300,600,15,1,(7),0.25), # 14
-            GLUBlock(300,750,21,1,(10),0.25), # 15        
+            GLUBlock(config.input_channels,200,13,1,6,dropout, bnm), # 1          
+            GLUBlock(100,200,3,1,(1),dropout, bnm), # 2
+            GLUBlock(100,200,4,1,(2),dropout, bnm), # 3
+            GLUBlock(100,250,5,1,(2),dropout, bnm), # 4
+            GLUBlock(125,250,6,1,(3),dropout, bnm), # 5
+            GLUBlock(125,300,7,1,(3),dropout, bnm), # 6
+            GLUBlock(150,350,8,1,(4),dropout, bnm), # 7
+            GLUBlock(175,400,9,1,(4),dropout, bnm), # 8
+            GLUBlock(200,450,10,1,(5),dropout, bnm), # 9
+            GLUBlock(225,500,11,1,(5),dropout, bnm), # 10
+            GLUBlock(250,500,12,1,(6),dropout, bnm), # 11
+            GLUBlock(250,500,13,1,(6),dropout, bnm), # 12
+            GLUBlock(250,600,14,1,(7),dropout, bnm), # 13
+            GLUBlock(300,600,15,1,(7),dropout, bnm), # 14
+            GLUBlock(300,750,21,1,(10),dropout, bnm), # 15        
         ]
         self.layers = nn.Sequential(*layer_list[:config.layer_num])
         self.last_channels = layer_outputs[config.layer_num-1]

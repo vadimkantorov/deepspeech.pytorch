@@ -728,9 +728,6 @@ def train(from_epoch, from_iter, from_checkpoint):
         wer_avg, cer_avg = check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
         new_score = wer_avg + cer_avg
         checkpoint += 1
-        
-        # save val and test curriculums as well
-        save_validation_curriculums()        
 
         if args.checkpoint and is_leader:  # checkpoint after the end of each epoch
             file_path = '%s/model_checkpoint_%04d_epoch_%02d.model' % (save_folder, checkpoint+1, epoch + 1)

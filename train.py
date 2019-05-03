@@ -359,7 +359,13 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 if x < 1:
                     print("CER: {:6.2f}% WER: {:6.2f}% Filename: {}".format(cer/cer_ref*100, wer/wer_ref*100, filenames[x]))
                     print('Reference:', reference, '\nTranscript:', transcript)
-
+                
+                times_used = test_dataset['curriculum']['times_used']+1
+                test_dataset.update_curriculum(filenames[x],
+                                               reference, transcript,
+                                               None,
+                                               cer / cer_ref, wer / wer_ref,
+                                               times_used=times_used)    
                 val_wer_sum += wer
                 val_cer_sum += cer
                 num_words += wer_ref
@@ -458,7 +464,14 @@ def calculate_trainval_quality_metrics(checkpoint,
                 if x < 1:
                     print("CER: {:6.2f}% WER: {:6.2f}% Filename: {}".format(cer/cer_ref*100, wer/wer_ref*100, filenames[x]))
                     print('Reference:', reference, '\nTranscript:', transcript)
-
+                    
+                times_used = trainval_dataset['curriculum']['times_used']+1
+                trainval_dataset.update_curriculum(filenames[x],
+                                                   reference, transcript,
+                                                   None,
+                                                   cer / cer_ref, wer / wer_ref,
+                                                   times_used=times_used)
+                
                 val_wer_sum += wer
                 val_cer_sum += cer
                 num_words += wer_ref
@@ -484,6 +497,26 @@ def calculate_trainval_quality_metrics(checkpoint,
         plots_handle.cer_results[checkpoint] = val_cer
         plots_handle.epochs[checkpoint] = checkpoint + 1 
         plots_handle.plot_progress(checkpoint, val_loss, val_cer, val_wer)
+
+        
+def save_validation_curriculums(save_folder,
+                                checkpoint,
+                                epoch,
+                                iteration=0):
+    if iteration>0:
+        test_path = '%s/test_checkpoint_%04d_epoch_%02d_iter_%05d.csv' % (save_folder, checkpoint + 1, epoch + 1, iteration + 1)
+    else:
+        test_path = '%s/test_checkpoint_%04d_epoch_%02d.csv' % (save_folder, checkpoint + 1, epoch + 1)
+    print("Saving test curriculum to {}".format(test_path))
+    test_dataset.save_curriculum(test_path) 
+    
+    if args.train_val_manifest != '':
+        if iteration>0:
+            trainval_path = '%s/trainval_checkpoint_%04d_epoch_%02d_iter_%05d.csv' % (save_folder, checkpoint + 1, epoch + 1, iteration + 1)
+        else:
+            trainval_path = '%s/trainval_checkpoint_%04d_epoch_%02d.csv' % (save_folder, checkpoint + 1, epoch + 1)
+        print("Saving trainval curriculum to {}".format(trainval_path))
+        trainval_dataset.save_curriculum(trainval_path)
 
     
 class Trainer:
@@ -531,7 +564,13 @@ class Trainer:
         for x in range(len(target_strings)):
             transcript, reference = decoded_output[x][0], target_strings[x][0]
             wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
-            train_dataset.update_curriculum(filenames[x], reference, transcript, None, cer / cer_ref, wer / wer_ref)
+            # accessing dict should be fast
+            times_used = train_dataset['curriculum']['times_used']+1
+            train_dataset.update_curriculum(filenames[x],
+                                            reference, transcript,
+                                            None,
+                                            cer / cer_ref, wer / wer_ref,
+                                            times_used=times_used)
 
             self.train_wer += wer
             self.train_cer += cer
@@ -665,7 +704,9 @@ def train(from_epoch, from_iter, from_checkpoint):
                     train_dataset.save_curriculum(file_path + '.csv')
 
                     check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
+                    save_validation_curriculums(save_folder, checkpoint + 1, epoch + 1, i + 1)  
                     checkpoint += 1
+                    
                     model.train()
                     if args.checkpoint_anneal != 1:
                         print("Checkpoint:", checkpoint)
@@ -687,6 +728,9 @@ def train(from_epoch, from_iter, from_checkpoint):
         wer_avg, cer_avg = check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
         new_score = wer_avg + cer_avg
         checkpoint += 1
+        
+        # save val and test curriculums as well
+        save_validation_curriculums()        
 
         if args.checkpoint and is_leader:  # checkpoint after the end of each epoch
             file_path = '%s/model_checkpoint_%04d_epoch_%02d.model' % (save_folder, checkpoint+1, epoch + 1)
@@ -705,6 +749,7 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results, 
                                             ), file_path)
             train_dataset.save_curriculum(file_path + '.csv')
+            save_validation_curriculums(save_folder, checkpoint + 1, epoch + 1, 0)
 
             # anneal lr
             print("Checkpoint:", checkpoint)

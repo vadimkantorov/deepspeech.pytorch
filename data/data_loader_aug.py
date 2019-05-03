@@ -477,6 +477,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                                      'text': '',
                                      'transcript': '',
                                      'offsets': None,
+                                     'times_used':0,
                                      'cer': 0.999,
                                      'wer': 0.999} for wav, txt, dur in tq(ids, desc='Loading')}
         super(SpectrogramDataset, self).__init__(audio_conf, cache_path, normalize, augment)
@@ -511,19 +512,22 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         np.random.shuffle(self.ids)
         self.size = len(self.ids)
 
-    def update_curriculum(self, audio_path, reference, transcript, offsets, cer, wer):
+    def update_curriculum(self, audio_path, reference, transcript, offsets, cer, wer,
+                          times_used=0):
         self.curriculum[audio_path] = {
             'wav': audio_path,
             'text': reference,
             'transcript': transcript,
             'offsets': offsets,
+            'times_used':times_used,
             'cer': cer,
             'wer': wer
         }
 
     def save_curriculum(self, fn):
         with open(fn, 'w') as f:
-            writer = csv.DictWriter(f, ['wav', 'text', 'transcript', 'offsets', 'cer', 'wer'])
+            writer = csv.DictWriter(f, ['wav', 'text', 'transcript', 'offsets',
+                                        'times_used', 'cer', 'wer'])
             writer.writeheader()
             for cl in self.curriculum.values():
                 writer.writerow(cl)

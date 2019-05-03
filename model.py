@@ -467,7 +467,7 @@ class GLUBlock(nn.Module):
                               kernel_size,
                               stride=stride,
                               padding=padding)
-        self.conv = weight_norm(self.conv, dim=1)
+        # self.conv = weight_norm(self.conv, dim=1)
         # self.norm = nn.InstanceNorm1d(out)        
         self.dropout = nn.Dropout(dropout)
         

@@ -698,6 +698,7 @@ def augment_audio_with_augs(path,
         y = librosa.resample(y, _sample_rate, sample_rate)
     assert len(y.shape)==1
     
+    # plug to omit augs 
     if transforms is not None:
         y_noise, _sample_rate = load_audio_norm(noise_path)
         if _sample_rate!=sample_rate:

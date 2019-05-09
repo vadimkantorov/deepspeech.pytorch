@@ -180,7 +180,7 @@ DEBUG = 1
 class DeepSpeech(nn.Module):
     def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=6, audio_conf=None,
                  bidirectional=True, context=20, bnm=0.1,
-                 dropout=0):
+                 dropout=0,cnn_width=256):
         super(DeepSpeech, self).__init__()
 
         # model metadata needed for serialization/deserialization
@@ -195,6 +195,7 @@ class DeepSpeech(nn.Module):
         self._bidirectional = bidirectional
         self._bnm = bnm
         self._dropout=dropout
+        self._cnn_width=cnn_width
 
         sample_rate = self._audio_conf.get("sample_rate", 16000)
         window_size = self._audio_conf.get("window_size", 0.02)
@@ -226,12 +227,12 @@ class DeepSpeech(nn.Module):
             size = rnn_hidden_size
             bnorm = True
             
-            modules = _block(in_channels=161, out_channels=256, kernel_size=7, padding=3, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
+            modules = _block(in_channels=161, out_channels=self._cnn_width, kernel_size=7, padding=3, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
             for _ in range(0,self._hidden_layers):
                 modules.extend(
-                    [*_block(in_channels=256, out_channels=256, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
+                    [*_block(in_channels=self._cnn_width, out_channels=self._cnn_width, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
                 )
-            modules.extend([*_block(in_channels=256, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
+            modules.extend([*_block(in_channels=self._cnn_width, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
             modules.extend([*_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
 
             self.rnns = nn.Sequential(*modules)
@@ -391,7 +392,8 @@ class DeepSpeech(nn.Module):
             'state_dict': model.state_dict(),
             'bnm': model._bnm,
             'bidirectional': model._bidirectional,
-            'dropout':model._dropout
+            'dropout':model._dropout,
+            'cnn_width':model._cnn_width
         }
         if optimizer is not None:
             package['optim_dict'] = optimizer.state_dict()

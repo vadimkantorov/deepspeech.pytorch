@@ -87,10 +87,19 @@ class AddNoise:
         if noise.shape[0]<wav.shape[0]:
             return {'wav':wav,'sr':sr,'noise':noise} 
         
-        if random.random() < self.prob:
-            alpha = self.limit
-            pos = random.randint(0,noise.shape[0]-wav.shape[0])
-            wav = (wav + alpha * noise[pos:pos+wav.shape[0]])/(1+self.limit)
+        gaussian_noise = np.random.normal(0, 1, len(wav.shape))
+        
+        # apply noise 2 times with some probability
+        # audio and noise are both normalized
+        for i in range(0,2):
+            if random.random() < self.prob:
+                if i==0:
+                    _noise = noise
+                else:
+                    _noise = gaussian_noise
+                alpha = self.limit * random.uniform(0, 1)
+                pos = random.randint(0,_noise.shape[0]-wav.shape[0])
+                wav = (wav + alpha * _noise[pos:pos+wav.shape[0]])/(1+self.limit)
             
         return {'wav':wav,'sr':sr,'noise':noise}    
     

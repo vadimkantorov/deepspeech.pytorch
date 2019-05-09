@@ -46,6 +46,7 @@ parser.add_argument('--window-size', default=.02, type=float, help='Window size 
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
 parser.add_argument('--window', default='hamming', help='Window type for spectrogram generation')
 parser.add_argument('--hidden-size', default=800, type=int, help='Hidden size of RNNs')
+parser.add_argument('--cnn-width', default=256, type=int, help='w2l-like network width')
 parser.add_argument('--hidden-layers', default=6, type=int, help='Number of RNN layers')
 parser.add_argument('--rnn-type', default='gru', help='Type of the RNN. rnn|gru|lstm are supported')
 parser.add_argument('--dropout', default=0, type=float, help='Fixed dropout for CNN based models')
@@ -868,6 +869,7 @@ if __name__ == '__main__':
         rnn_type = args.rnn_type.lower()
         assert rnn_type in supported_rnns, "rnn_type should be either lstm, rnn or gru"
         model = DeepSpeech(rnn_hidden_size=args.hidden_size,
+                           cnn_width=args.cnn_width,
                            nb_layers=args.hidden_layers,
                            labels=labels,
                            rnn_type=rnn_type,

@@ -214,12 +214,20 @@ class DeepSpeech(nn.Module):
         if self._rnn_type == 'cnn':
             def _block(in_channels, out_channels, kernel_size, padding=0, stride=1, bnorm=False, bias=True,
                        dropout=0):
+                # use self._bidirectional flag as a flag for GLU usage in the CNN 
+                if self._bidirectional:
+                    out_channels = int(out_channels * 2)
+
                 res = [nn.Conv1d(in_channels=in_channels, out_channels=out_channels,
                                  kernel_size=kernel_size, padding=padding, stride=stride, bias=bias)]
 
                 if bnorm:
                     res.append(nn.BatchNorm1d(out_channels, momentum=bnm))
-                res.append(nn.ReLU(inplace=True))
+                # use self._bidirectional flag as a flag for GLU usage in the CNN                    
+                if not self._bidirectional:
+                    res.append(nn.ReLU(inplace=True))
+                else:
+                    res.append(GLUModule(dim=1))
                 if dropout>0:
                     res.append(nn.Dropout(dropout))
                 return res
@@ -566,6 +574,16 @@ class DotDict(dict):
             if hasattr(value, 'keys'):
                 value = DotDict(value)
             self[key] = value    
+
+
+# wrap in module to use in sequential
+class GLUModule(nn.Module):
+    def __init__(self, dim=1):
+        super(GLUModule, self).__init__()
+        self.dim = 1
+
+    def forward(self, x):
+        return glu(x,dim=self.dim)           
 
 
 def main():

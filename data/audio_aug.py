@@ -87,7 +87,7 @@ class AddNoise:
         if noise.shape[0]<wav.shape[0]:
             return {'wav':wav,'sr':sr,'noise':noise} 
         
-        gaussian_noise = np.random.normal(0, 1, len(wav.shape))
+        gaussian_noise = np.random.normal(0, 1, wav.shape[0]*2)
         
         # apply noise 2 times with some probability
         # audio and noise are both normalized

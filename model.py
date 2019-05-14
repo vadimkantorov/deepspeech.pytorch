@@ -214,20 +214,26 @@ class DeepSpeech(nn.Module):
         if self._rnn_type == 'cnn':
             def _block(in_channels, out_channels, kernel_size, padding=0, stride=1, bnorm=False, bias=True,
                        dropout=0):
-                # use self._bidirectional flag as a flag for GLU usage in the CNN 
-                if self._bidirectional:
+                # use self._bidirectional flag as a flag for GLU usage in the CNN
+                # the flag is True by default, so use False
+                if not self._bidirectional:
                     out_channels = int(out_channels * 2)
 
                 res = [nn.Conv1d(in_channels=in_channels, out_channels=out_channels,
                                  kernel_size=kernel_size, padding=padding, stride=stride, bias=bias)]
-
-                if bnorm:
-                    res.append(nn.BatchNorm1d(out_channels, momentum=bnm))
+                # for non GLU networks
+                if self._bidirectional:
+                    if bnorm:
+                        res.append(nn.BatchNorm1d(out_channels, momentum=bnm))
                 # use self._bidirectional flag as a flag for GLU usage in the CNN                    
-                if not self._bidirectional:
+                if self._bidirectional:
                     res.append(nn.ReLU(inplace=True))
                 else:
                     res.append(GLUModule(dim=1))
+                # for GLU networks
+                if not self._bidirectional:
+                    if bnorm:
+                        res.append(nn.BatchNorm1d(int(out_channels//2), momentum=bnm))                    
                 if dropout>0:
                     res.append(nn.Dropout(dropout))
                 return res
@@ -380,7 +386,9 @@ class DeepSpeech(nn.Module):
                     rnn_type=package['rnn_type'],
                     bnm=package.get('bnm', 0.1),
                     bidirectional=package.get('bidirectional', True),
-                    dropout=package.get('dropout', 0))
+                    dropout=package.get('dropout', 0),
+                    cnn_width=package.get('cnn_width',0)
+                   )
         model.load_state_dict(package['state_dict'])
         return model
 

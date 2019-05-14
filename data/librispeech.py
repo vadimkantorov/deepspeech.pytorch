@@ -1,6 +1,8 @@
 import os
+import math
 import wget
 import tarfile
+import requests
 import argparse
 import subprocess
 from utils import create_manifest
@@ -21,16 +23,18 @@ parser.add_argument('--max-duration', default=15, type=int,
                     help='Prunes training samples longer than the max duration (given in seconds, default 15)')
 args = parser.parse_args()
 
+# cn-mirror
+
 LIBRI_SPEECH_URLS = {
-    "train": ["http://www.openslr.org/resources/12/train-clean-100.tar.gz",
-              "http://www.openslr.org/resources/12/train-clean-360.tar.gz",
-              "http://www.openslr.org/resources/12/train-other-500.tar.gz"],
+    "train": ["http://cn-mirror.openslr.org/resources/12/train-clean-100.tar.gz",
+              "http://cn-mirror.openslr.org/resources/12/train-clean-360.tar.gz",
+              "http://cn-mirror.openslr.org/resources/12/train-other-500.tar.gz"],
 
-    "val": ["http://www.openslr.org/resources/12/dev-clean.tar.gz",
-            "http://www.openslr.org/resources/12/dev-other.tar.gz"],
+    "val": ["http://cn-mirror.openslr.org/resources/12/dev-clean.tar.gz",
+            "http://cn-mirror.openslr.org/resources/12/dev-other.tar.gz"],
 
-    "test_clean": ["http://www.openslr.org/resources/12/test-clean.tar.gz"],
-    "test_other": ["http://www.openslr.org/resources/12/test-other.tar.gz"]
+    "test_clean": ["http://cn-mirror.openslr.org/resources/12/test-clean.tar.gz"],
+    "test_other": ["http://cn-mirror.openslr.org/resources/12/test-other.tar.gz"]
 }
 
 
@@ -85,8 +89,33 @@ def main():
 
             if not os.path.exists(target_filename):
                 print("Downloading file {} from {} to {}".format(filename, url, target_filename))
-                raise Exception("Error")
+                raise Exception("All files should be present")
                 wget.download(url, split_dir)
+                
+                """
+                r = requests.get(url,
+                                 stream=True,
+                                 proxies=dict(http='socks5://dn_socks:Camelot@25Camelot@25@45.32.154.18:14088'))
+                
+                # Total size in bytes.
+                total_size = int(r.headers.get('content-length', 0))
+                block_size = 1024 * 100
+                wrote = 0            
+
+                if r.status_code == 200:
+                    # with open(download_path, 'wb') as f:
+                    #     r.raw.decode_content = True
+                    #     shutil.copyfileobj(r.raw, f)
+                    with open(target_filename, 'wb') as f:
+                        for data in tqdm(r.iter_content(block_size), total=math.ceil(total_size//block_size) , unit='KB', unit_scale=True):
+                            wrote = wrote  + len(data)
+                            f.write(data)
+                    if total_size != 0 and wrote != total_size:
+                        print("ERROR, something went wrong")                          
+                else:
+                    raise Exception("Error when loading file {} with proxy".format(url))
+                """
+                print('File downloaded')
             else:
                 print("Skipping existing file from url: {}".format(url))
             print("Unpacking {}...".format(filename))

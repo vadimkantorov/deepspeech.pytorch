@@ -1,13 +1,13 @@
-import argparse
-import csv
 import os
+import csv
+import argparse
 
-import numpy as np
-import torch
 import gc
+import torch
+import numpy as np
 from tqdm import tqdm
 
-from data.data_loader import SpectrogramDataset, AudioDataLoader
+from data.data_loader_aug import SpectrogramDataset, AudioDataLoader
 from data.utils import get_cer_wer
 from decoder import GreedyDecoder
 from model import DeepSpeech
@@ -19,6 +19,7 @@ parser.add_argument('--cache-dir', metavar='DIR',
                     help='path to save temp audio', default='data/cache/')
 parser.add_argument('--test-manifest', metavar='DIR',
                     help='path to validation manifest csv', default='data/test_manifest.csv')
+parser.add_argument('--continue-from', default='', help='Continue from checkpoint model')
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--verbose', action="store_true", help="print out decoded output and error of each sample")
@@ -26,6 +27,8 @@ parser.add_argument('--errors', action="store_true", help="print error report")
 parser.add_argument('--best', action="store_true", help="print best results")
 parser.add_argument('--norm', default='max_frame', action="store",
                     help='Normalize sounds. Choices: "mean", "frame", "max_frame", "none"')
+parser.add_argument('--data-parallel', dest='data_parallel', action='store_true',
+                    help='Use data parallel')
 parser.add_argument('--report-file', metavar='DIR', default='data/test_report.csv', help="Filename to save results")
 no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration options for when no decoder is "
                                                                   "specified")
@@ -35,13 +38,31 @@ args = parser.parse_args()
 
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
-    model = DeepSpeech.load_model(args.model_path)
+    package = torch.load(args.continue_from,
+                         map_location=lambda storage, loc: storage)
+    # model = DeepSpeech.load_model(args.model_path)
+    model = DeepSpeech.load_model_package(package)
+    
     device = torch.device("cuda" if args.cuda else "cpu")
     model = model.to(device)
-    model.eval()
 
     labels = DeepSpeech.get_labels(model)
     audio_conf = DeepSpeech.get_audio_conf(model)
+    
+    if args.data_parallel:
+        model = torch.nn.DataParallel(model).to(device)
+        print('Using DP')    
+    model.eval()        
+    
+    print(model)
+    
+    # zero-out the aug bits
+    audio_conf = {**audio_conf,
+                  'noise_prob': 0,
+                  'aug_prob_8khz':0,
+                  'aug_prob_spect':0}
+    
+    print(audio_conf)
 
     report_file = None
     if args.report_file:
@@ -64,11 +85,14 @@ if __name__ == '__main__':
                                       manifest_filepath=args.test_manifest,
                                       cache_path=args.cache_dir,
                                       labels=labels,
-                                      normalize=args.norm)
+                                      normalize=args.norm,
+                                      augment=False)
+    
     # import random;random.shuffle(test_dataset.ids)
 
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
                                   num_workers=args.num_workers)
+
     total_cer, total_wer, num_tokens, num_chars = 0, 0, 0, 0
     processed_files = []
     for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):

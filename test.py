@@ -29,6 +29,7 @@ parser.add_argument('--norm', default='max_frame', action="store",
                     help='Normalize sounds. Choices: "mean", "frame", "max_frame", "none"')
 parser.add_argument('--data-parallel', dest='data_parallel', action='store_true',
                     help='Use data parallel')
+parser.add_argument('--cuda', dest='cuda', action='store_true', help='Use cuda to train model')
 parser.add_argument('--report-file', metavar='DIR', default='data/test_report.csv', help="Filename to save results")
 no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration options for when no decoder is "
                                                                   "specified")

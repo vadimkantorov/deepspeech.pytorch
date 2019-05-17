@@ -158,6 +158,7 @@ class PlotWindow:
         self.wer_results = torch.Tensor(10000)
         self.epochs = torch.arange(1, 10000)
         self.viz_window = None
+        self.tb_subplot='/'+suffix
 
         global viz, tensorboard_writer
         hour_now = str(datetime.datetime.now()).split('.', 1)[0][:-3]
@@ -204,7 +205,8 @@ class PlotWindow:
                     'Avg WER': self.wer_results[i],
                     'Avg CER': self.cer_results[i]
                 }
-                tensorboard_writer.add_scalars(args.id, values, i + 1)
+                tensorboard_writer.add_scalars(args.id+self.tb_subplot,
+                                               values, i + 1)
 
     def plot_progress(self, epoch, avg_loss, cer_avg, wer_avg):
         global viz, tensorboard_writer
@@ -234,7 +236,9 @@ class PlotWindow:
                 'Avg WER': wer_avg,
                 'Avg CER': cer_avg
             }
-            tensorboard_writer.add_scalars(args.id, values, epoch + 1)
+            tensorboard_writer.add_scalars(args.id+self.tb_subplot,
+                                           values,
+                                           epoch + 1)
             if args.log_params:
                 for tag, value in model.named_parameters():
                     tag = tag.replace('.', '/')
@@ -248,6 +252,7 @@ class LRPlotWindow:
         self.epochs = torch.Tensor(10000)
         self.viz_window = None
         self.suffix = suffix
+        self.tb_subplot='/'+suffix
 
         global viz, tensorboard_writer
         hour_now = str(datetime.datetime.now()).split('.', 1)[0][:-3]
@@ -295,7 +300,8 @@ class LRPlotWindow:
             values = {
                 'Avg Train Loss': avg_loss,
             }
-            tensorboard_writer.add_scalars(args.id, values, epoch + 1)
+            tensorboard_writer.add_scalars(args.id+self.tb_subplot,
+                                           values, epoch + 1)
             if args.log_params:
                 for tag, value in model.named_parameters():
                     tag = tag.replace('.', '/')
@@ -792,17 +798,17 @@ if __name__ == '__main__':
     save_folder = args.save_folder
     os.makedirs(save_folder, exist_ok=True)
 
-    plots = PlotWindow(args.id, 'train loss, epochs', log_y=True)
-    checkpoint_plots = PlotWindow(args.id, 'val loss, checkpoints', log_y=True)
+    plots = PlotWindow(args.id, 'train_loss_epochs', log_y=True)
+    checkpoint_plots = PlotWindow(args.id, 'test_loss_checks', log_y=True)
     if args.train_val_manifest != '':
-        trainval_checkpoint_plots = PlotWindow(args.id, 'train val loss, checkpoints', log_y=True)
+        trainval_checkpoint_plots = PlotWindow(args.id, 'val_loss_checks', log_y=True)
     else:
         # set all properties to None for easy backwards compatibility
         trainval_checkpoint_plots = t = type('test', (object,), {})()
         trainval_checkpoint_plots.loss_results = None
         trainval_checkpoint_plots.wer_results = None
         trainval_checkpoint_plots.cer_results = None
-    lr_plots = LRPlotWindow(args.id, 'LRFinder', log_x=True)
+    lr_plots = LRPlotWindow(args.id, 'lr_finder', log_x=True)
 
     total_avg_loss, start_epoch, start_iter, start_checkpoint = 0, 0, 0, 0
     if args.continue_from:  # Starting from previous model

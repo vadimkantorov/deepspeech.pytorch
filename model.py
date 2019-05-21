@@ -212,7 +212,8 @@ class DeepSpeech(nn.Module):
         ))
 
         if self._rnn_type == 'cnn':
-            def _block(in_channels, out_channels, kernel_size, padding=0, stride=1, bnorm=False, bias=True,
+            def _block(in_channels, out_channels, kernel_size,
+                       padding=0, stride=1, bnorm=False, bias=True,
                        dropout=0):
                 # use self._bidirectional flag as a flag for GLU usage in the CNN
                 # the flag is True by default, so use False
@@ -220,7 +221,8 @@ class DeepSpeech(nn.Module):
                     out_channels = int(out_channels * 2)
 
                 res = [nn.Conv1d(in_channels=in_channels, out_channels=out_channels,
-                                 kernel_size=kernel_size, padding=padding, stride=stride, bias=bias)]
+                                 kernel_size=kernel_size, padding=padding,
+                                 stride=stride, bias=bias)]
                 # for non GLU networks
                 if self._bidirectional:
                     if bnorm:
@@ -233,7 +235,8 @@ class DeepSpeech(nn.Module):
                 # for GLU networks
                 if not self._bidirectional:
                     if bnorm:
-                        res.append(nn.BatchNorm1d(int(out_channels//2), momentum=bnm))                    
+                        res.append(nn.BatchNorm1d(int(out_channels//2),
+                                                  momentum=bnm))                    
                 if dropout>0:
                     res.append(nn.Dropout(dropout))
                 return res
@@ -241,15 +244,32 @@ class DeepSpeech(nn.Module):
             size = rnn_hidden_size
             bnorm = True
             
-            modules = _block(in_channels=161, out_channels=self._cnn_width, kernel_size=7, padding=3, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
+            modules = _block(in_channels=161, out_channels=self._cnn_width, kernel_size=7,
+                             padding=3, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
             for _ in range(0,self._hidden_layers):
                 modules.extend(
-                    [*_block(in_channels=self._cnn_width, out_channels=self._cnn_width, kernel_size=7, padding=3, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
+                    [*_block(in_channels=self._cnn_width, out_channels=self._cnn_width, kernel_size=7,
+                             padding=3, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
                 )
-            modules.extend([*_block(in_channels=self._cnn_width, out_channels=size, kernel_size=31, padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
-            modules.extend([*_block(in_channels=size, out_channels=size, kernel_size=1, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
+            modules.extend([*_block(in_channels=self._cnn_width, out_channels=size, kernel_size=31,
+                                    padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
+            modules.extend([*_block(in_channels=size, out_channels=size, kernel_size=1,
+                                    bnorm=bnorm, bias=not bnorm, dropout=dropout)])
 
             self.rnns = nn.Sequential(*modules)
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+        elif self._rnn_type == 'large_cnn':
+            self.rnns = LargeCNN(
+                DotDict({
+                    'input_channels':161,
+                    'bnm':bnm,
+                    'dropout':dropout,
+                })
+            )
+            # last GLU layer size
+            size = self.rnns.last_channels            
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
@@ -500,6 +520,39 @@ class GLUBlock(nn.Module):
         x = self.norm(x)
         x = self.dropout(x)
         return x
+    
+    
+class CNNBlock(nn.Module):
+    def __init__(self,
+                 _in=1,
+                 out=400,
+                 kernel_size=13,
+                 stride=1,
+                 padding=0,
+                 dropout=0.1,
+                 bnm=0.1,
+                 nonlinearity=nn.ReLU(inplace=True),
+                 bias=True
+                 ):
+        super(GLUBlock, self).__init__()       
+        
+        self.conv = nn.Conv1d(_in,
+                              out,
+                              kernel_size,
+                              stride=stride,
+                              padding=padding,
+                              bias=bias)
+        self.norm = nn.BatchNorm1d(out,
+                                   momentum=bnm)
+        self.nonlinearity = nonlinearity
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.norm(x)
+        x = self.nonlinearity(x)
+        x = self.dropout(x)
+        return x    
 
 
 class SmallGLU(nn.Module):
@@ -565,6 +618,38 @@ class LargeGLU(nn.Module):
         return self.layers(x)     
 
 
+class LargeCNN(nn.Module):
+    def __init__(self,config):
+        super(LargeGLU, self).__init__()       
+        bnm = config.bnm
+        dropout = config.dropout         
+        # in out kw stride padding dropout
+        self.layers = nn.Sequential(
+            # whole padding in one place
+            CNNBlock(config.input_channels,200,13,1,170,dropout, bnm), # 1          
+            CNNBlock(200,200,14,1,0, dropout, bnm), # 2
+            CNNBlock(220,220,15,1,0, dropout, bnm), # 3
+            CNNBlock(242,242,16,1,0, dropout, bnm), # 4
+            CNNBlock(266,266,17,1,0, dropout, bnm), # 5
+            CNNBlock(292,292,18,1,0, dropout, bnm), # 6
+            CNNBlock(321,321,19,1,0, dropout, bnm), # 7
+            CNNBlock(353,353,20,1,0, dropout, bnm), # 8
+            CNNBlock(388,388,21,1,0, dropout, bnm), # 9
+            CNNBlock(426,426,22,1,0, dropout, bnm), # 10
+            CNNBlock(468,468,23,1,0, dropout, bnm), # 11
+            CNNBlock(514,514,24,1,0, dropout, bnm), # 12
+            CNNBlock(565,565,25,1,0, dropout, bnm), # 13
+            CNNBlock(621,621,26,1,0, dropout, bnm), # 14
+            CNNBlock(683,683,27,1,0, dropout, bnm), # 15
+            CNNBlock(751,751,28,1,0, dropout, bnm), # 16
+            CNNBlock(826,826,29,1,0, dropout, bnm), # 17
+        )
+        self.last_channels = 826        
+
+    def forward(self, x):
+        return self.layers(x)  
+    
+    
 class DotDict(dict):
     """
     a dictionary that supports dot notation 

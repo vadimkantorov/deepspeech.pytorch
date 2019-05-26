@@ -17,7 +17,8 @@ supported_rnns = {
     'cnn': None,
     'glu_small':None,
     'glu_large':None,
-    'glu_flexible':None
+    'glu_flexible':None,
+    'large_cnn':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -335,7 +336,7 @@ class DeepSpeech(nn.Module):
         lengths = lengths.cpu().int()
         output_lengths = self.get_seq_lens(lengths).cuda()
 
-        if self._rnn_type in ['cnn','glu_small','glu_large']:
+        if self._rnn_type in ['cnn','glu_small','glu_large','large_cnn']:
             x = x.squeeze(1)
             x = self.rnns(x)
             x = self.fc(x)
@@ -534,7 +535,7 @@ class CNNBlock(nn.Module):
                  nonlinearity=nn.ReLU(inplace=True),
                  bias=True
                  ):
-        super(GLUBlock, self).__init__()       
+        super(CNNBlock, self).__init__()       
         
         self.conv = nn.Conv1d(_in,
                               out,
@@ -620,28 +621,28 @@ class LargeGLU(nn.Module):
 
 class LargeCNN(nn.Module):
     def __init__(self,config):
-        super(LargeGLU, self).__init__()       
+        super(LargeCNN, self).__init__()       
         bnm = config.bnm
         dropout = config.dropout         
         # in out kw stride padding dropout
         self.layers = nn.Sequential(
             # whole padding in one place
             CNNBlock(config.input_channels,200,13,1,170,dropout, bnm), # 1          
-            CNNBlock(200,200,14,1,0, dropout, bnm), # 2
-            CNNBlock(220,220,15,1,0, dropout, bnm), # 3
-            CNNBlock(242,242,16,1,0, dropout, bnm), # 4
-            CNNBlock(266,266,17,1,0, dropout, bnm), # 5
-            CNNBlock(292,292,18,1,0, dropout, bnm), # 6
-            CNNBlock(321,321,19,1,0, dropout, bnm), # 7
-            CNNBlock(353,353,20,1,0, dropout, bnm), # 8
-            CNNBlock(388,388,21,1,0, dropout, bnm), # 9
-            CNNBlock(426,426,22,1,0, dropout, bnm), # 10
-            CNNBlock(468,468,23,1,0, dropout, bnm), # 11
-            CNNBlock(514,514,24,1,0, dropout, bnm), # 12
-            CNNBlock(565,565,25,1,0, dropout, bnm), # 13
-            CNNBlock(621,621,26,1,0, dropout, bnm), # 14
-            CNNBlock(683,683,27,1,0, dropout, bnm), # 15
-            CNNBlock(751,751,28,1,0, dropout, bnm), # 16
+            CNNBlock(200,220,14,1,0, dropout, bnm), # 2
+            CNNBlock(220,242,15,1,0, dropout, bnm), # 3
+            CNNBlock(242,266,16,1,0, dropout, bnm), # 4
+            CNNBlock(266,292,17,1,0, dropout, bnm), # 5
+            CNNBlock(292,321,18,1,0, dropout, bnm), # 6
+            CNNBlock(321,353,19,1,0, dropout, bnm), # 7
+            CNNBlock(353,388,20,1,0, dropout, bnm), # 8
+            CNNBlock(388,426,21,1,0, dropout, bnm), # 9
+            CNNBlock(426,468,22,1,0, dropout, bnm), # 10
+            CNNBlock(468,514,23,1,0, dropout, bnm), # 11
+            CNNBlock(514,565,24,1,0, dropout, bnm), # 12
+            CNNBlock(565,621,25,1,0, dropout, bnm), # 13
+            CNNBlock(621,683,26,1,0, dropout, bnm), # 14
+            CNNBlock(683,751,27,1,0, dropout, bnm), # 15
+            CNNBlock(751,826,28,1,0, dropout, bnm), # 16
             CNNBlock(826,826,29,1,0, dropout, bnm), # 17
         )
         self.last_channels = 826        

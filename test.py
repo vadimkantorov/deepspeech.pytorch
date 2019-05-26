@@ -94,6 +94,9 @@ if __name__ == '__main__':
                                   num_workers=args.num_workers)
 
     total_cer, total_wer, num_tokens, num_chars = 0, 0, 0, 0
+    # check calculation
+    avg_total_wer, avg_total_cer = 0, 0
+    
     processed_files = []
     for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
         inputs, targets, filenames, input_percentages, target_sizes = data
@@ -181,7 +184,11 @@ if __name__ == '__main__':
             total_cer += cer
             num_tokens += wer_ref
             num_chars += cer_ref
+            
+            avg_total_wer += wer / wer_ref
+            avg_total_cer += cer / cer_ref            
 
+            
         del out, out0, output_sizes, out_raw_cpu, out_softmax_cpu
         if (i + 1) % 5 == 0 or args.batch_size == 1:
             gc.collect()
@@ -190,10 +197,17 @@ if __name__ == '__main__':
     if decoder is not None:
         wer_avg = float(total_wer) / num_tokens
         cer_avg = float(total_cer) / num_chars
-
+        wer_avg2 = avg_total_wer / len(test_loader.dataset)
+        cer_avg2 = avg_total_cer / len(test_loader.dataset)        
+        
         print('Test Summary \t'
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(wer=wer_avg * 100, cer=cer_avg * 100))
+        
+        print('Alternative Test Summary \t'
+              'Average WER {wer:.3f}\t'
+              'Average CER {cer:.3f}\t'.format(wer=wer_avg2 * 100, cer=cer_avg2 * 100))        
+        
     if args.output_path:
         import pickle
         with open(args.output_path, 'w') as f:

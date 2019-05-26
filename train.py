@@ -54,6 +54,7 @@ parser.add_argument('--epochs', default=70, type=int, help='Number of training e
 parser.add_argument('--cuda', dest='cuda', action='store_true', help='Use cuda to train model')
 parser.add_argument('--lr', '--learning-rate', default=3e-4, type=float, help='initial learning rate')
 parser.add_argument('--optimizer', default='sgd', help='Optimizer - sgd or adam')
+parser.add_argument('--weight-decay', default=0, help='Weight decay for SGD', type=float)
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--batch-norm-momentum', default=0.1, type=float, help='BatchNorm momentum')
 parser.add_argument('--max-norm', default=100, type=int, help='Norm cutoff to prevent explosion of gradients')
@@ -138,10 +139,14 @@ class AverageMeter(object):
 def build_optimizer(args_, parameters_):
     # import aggmo
     # return aggmo.AggMo(model.parameters(), args_.lr, betas=[0, 0.6, 0.9])
+    if args_.weight_decay>0:
+        print('Using weight decay {} for SGD'.format(args_.weight_decay))
+
     if args_.optimizer=='sgd':
         print('Using SGD')
         return torch.optim.SGD(parameters_, lr=args_.lr,
-                               momentum=args_.momentum, nesterov=True)
+                               momentum=args_.momentum, nesterov=True,
+                               weight_decay=args_.weight_decay)
     elif args_.optimizer=='adam':
         print('Using ADAM')
         return torch.optim.Adam(parameters_, lr=args_.lr)   

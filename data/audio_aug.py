@@ -1,7 +1,7 @@
 import random
 import librosa
 import numpy as np
-from data.data_loader_aug import load_audio_norm
+from data.audio_loader import load_audio_norm
 
 
 class ChangeAudioSpeed:
@@ -92,6 +92,7 @@ class AddNoise:
             if random.random() < self.prob:
                 if i==0:
                     _noise = get_stacked_noise(noise_path=random.sample(self.noise_samples,k=1)[0],
+                                               wav=wav,
                                                sr=sr)
                     # noise still should be longer than audio
                     if _noise.shape[0]<wav.shape[0]:
@@ -105,7 +106,9 @@ class AddNoise:
             
         return {'wav':wav,'sr':sr}    
 
+
 def get_stacked_noise(noise_path=None,
+                      wav=None,
                       sr=16000):
     # randomly read noises to stack them
     # into one noise file longer than our audio
@@ -116,7 +119,7 @@ def get_stacked_noise(noise_path=None,
         if _sample_rate!=sr:
             y = librosa.resample(y, _sample_rate, sample_rate)
 
-        if noise in locals():
+        if _>0:
             noise = np.stack((noise, _noise),
                              axis=0)
         else:

@@ -27,9 +27,21 @@ from torch.distributed import get_world_size
 
 from data.labels import Labels
 from data.curriculum import Curriculum
-from data.audio_aug import *
-from data.spectrogram_aug import *
-
+from data.audio_aug import (ChangeAudioSpeed,
+                            Shift,
+                            AudioDistort,
+                            PitchShift,
+                            AddNoise,
+                            Compose,
+                            OneOf,
+                            OneOrOther)
+from data.spectrogram_aug import (SCompose,
+                                  SOneOf,
+                                  SComposePipelines,
+                                  SOneOrOther,
+                                  FrequencyMask,
+                                  TimeMask)
+from data.audio_loader import load_audio_norm
 from scipy.io import wavfile
 
 tq = tqdm.tqdm
@@ -44,33 +56,6 @@ windows = {'hamming': scipy.signal.hamming,
 def load_audio(path, channel=-1):
     sound, sample_rate = torchaudio.load(path, normalization=False)
     sound = sound.numpy().T
-    if len(sound.shape) > 1:
-        if sound.shape[1] == 1:
-            sound = sound.squeeze()
-        elif channel == -1:
-            sound = sound.mean(axis=1)  # multiple channels, average
-        else:
-            sound = sound[:, channel]  # multiple channels, average
-    return sound, sample_rate
-
-
-def load_audio_norm(path, channel=-1):
-    # sound, sample_rate = torchaudio.load(path, normalization=lambda x: torch.abs(x).max())
-    # sound = sound.numpy().T
-    
-    # use scipy, as all files are wavs for now
-    # Fix https://github.com/pytorch/audio/issues/14 later
-    sample_rate, sound = wavfile.read(path)
-    
-    try:
-        abs_max = np.abs(sound).max()
-        sound = sound.astype('float32')
-        if abs_max>0:
-            sound *= 1/abs_max
-    except:
-        print(path)
-        raise ValueError('Mow')
-    
     if len(sound.shape) > 1:
         if sound.shape[1] == 1:
             sound = sound.squeeze()
@@ -388,7 +373,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         if self.aug_prob>0:
             print('Using sound augs!')            
             self.aug_samples = glob(audio_conf.get('noise_dir'))
-            print('Found {} noise samples for augmentations'.format(self.aug_samples))
+            print('Found {} noise samples for augmentations'.format(len(self.aug_samples)))
             # plain vanilla aug pipeline
             # the probability of harder augs is lower
             # aug probs will be normalized inside of OneOf

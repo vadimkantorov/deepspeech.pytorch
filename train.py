@@ -618,8 +618,9 @@ class Trainer:
         # compute gradient
         optimizer.zero_grad()
         loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+        
+        if args.max_norm>0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
 
         if torch.isnan(logits).any():
             # work around bad data

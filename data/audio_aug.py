@@ -1,6 +1,7 @@
 import random
 import librosa
 import numpy as np
+from data.data_loader_aug import load_audio_norm
 
 
 class ChangeAudioSpeed:
@@ -12,14 +13,14 @@ class ChangeAudioSpeed:
 
         
     def __call__(self, wav=None,
-                 sr=None, noise=None):
+                 sr=None):
         assert len(wav.shape)==1
         if random.random() < self.prob:
             alpha = 1.0 + self.limit * random.uniform(-1, 1)
             _wav = librosa.effects.time_stretch(wav, alpha)
             if _wav.shape[0]<self.max_duration:
                 wav = _wav
-        return {'wav':wav,'sr':sr,'noise':noise}
+        return {'wav':wav,'sr':sr}
     
     
 class Shift:
@@ -30,7 +31,7 @@ class Shift:
         self.max_duration = max_duration * sr
 
     def __call__(self, wav=None,
-                 sr=None, noise=None):
+                 sr=None):
         assert len(wav.shape)==1
         if random.random() < self.prob:
             limit = self.limit
@@ -40,7 +41,7 @@ class Shift:
             _wav[shift:length+shift] = wav
             if _wav.shape[0]<self.max_duration:
                 wav = _wav
-        return {'wav':wav,'sr':sr,'noise':noise}
+        return {'wav':wav,'sr':sr}
 
     
 class AudioDistort:
@@ -49,14 +50,14 @@ class AudioDistort:
         self.prob = prob
 
     def __call__(self, wav=None,
-                 sr=None, noise=None):
+                 sr=None):
         # simulate phone call clipping effect
         if random.random() < self.prob:
             alpha = 1.0 + self.limit * random.uniform(-1, 1)
             maxval = np.max(wav)
             dtype = wav.dtype
             wav = clip(alpha * wav, dtype, maxval)
-        return {'wav':wav,'sr':sr,'noise':noise}
+        return {'wav':wav,'sr':sr}
  
 
 class PitchShift:
@@ -66,43 +67,69 @@ class PitchShift:
 
         
     def __call__(self, wav=None,
-                 sr=22050, noise=None):
+                 sr=22050):
         assert len(wav.shape)==1
         if random.random() < self.prob:
             alpha = self.limit * random.uniform(-1, 1)
             wav = librosa.effects.pitch_shift(wav, sr, n_steps=alpha)
-        return {'wav':wav,'sr':sr,'noise':noise}   
+        return {'wav':wav,'sr':sr}   
 
     
 class AddNoise:
-    def __init__(self, limit=0.2, prob=0.5):
+    def __init__(self, limit=0.2, prob=0.5,
+                 noise_samples=[]):
         self.limit = abs(limit)
         self.prob = prob
+        self.noise_samples = noise_samples
 
         
     def __call__(self, wav=None,
-                 sr=None, noise=None):
+                 sr=None):
         assert len(wav.shape)==1
-        assert len(noise.shape)==1
-        if noise.shape[0]<wav.shape[0]:
-            return {'wav':wav,'sr':sr,'noise':noise} 
-        
-        gaussian_noise = np.random.normal(0, 1, wav.shape[0]*2)
-        
         # apply noise 2 times with some probability
         # audio and noise are both normalized
         for i in range(0,2):
             if random.random() < self.prob:
                 if i==0:
-                    _noise = noise
+                    _noise = get_stacked_noise(noise_path=random.sample(self.noise_samples,k=1)[0],
+                                               sr=sr)
+                    # noise still should be longer than audio
+                    if _noise.shape[0]<wav.shape[0]:
+                        return {'wav':wav,'sr':sr}
                 else:
+                    gaussian_noise = np.random.normal(0, 1, wav.shape[0]*2)
                     _noise = gaussian_noise
                 alpha = self.limit * random.uniform(0, 1)
                 pos = random.randint(0,_noise.shape[0]-wav.shape[0])
-                wav = (wav + alpha * _noise[pos:pos+wav.shape[0]])/(1+self.limit)
+                wav = (wav + alpha * _noise[pos:pos+wav.shape[0]])/(1+alpha)
             
-        return {'wav':wav,'sr':sr,'noise':noise}    
-    
+        return {'wav':wav,'sr':sr}    
+
+def get_stacked_noise(noise_path=None,
+                      sr=16000):
+    # randomly read noises to stack them
+    # into one noise file longer than our audio
+    # 10 files max
+    for _ in range(0,10):
+        _noise, _sample_rate = load_audio_norm(noise_path)
+        assert len(_noise.shape)==1
+        if _sample_rate!=sr:
+            y = librosa.resample(y, _sample_rate, sample_rate)
+
+        if noise in locals():
+            noise = np.stack((noise, _noise),
+                             axis=0)
+        else:
+            noise = _noise
+
+        assert len(noise.shape)==1
+        if noise.shape[0]>wav.shape[0]:
+            # we have enough noise already!
+            break
+        if i==10:
+            print('Used 10 noise samples')
+    return noise
+
 
 class Compose(object):
     def __init__(self, transforms, p=1.):

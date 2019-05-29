@@ -205,15 +205,9 @@ class SpectrogramParser(AudioParser):
         if spect is None:
             if self.augment or True: # always use the pipeline with augs
                 if self.aug_prob>-1: # always use the pipeline with augs
-                    if self.augs is not None:
-                        noise_path = random.choice(self.aug_samples)
-                    else:
-                        noise_path = '' # fast plug, augs will be disregarded downstream
-                    
                     y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
                                                                    channel=self.channel,
                                                                    tempo_range=TEMPOS[tempo_id][1],
-                                                                   noise_path=noise_path,
                                                                    transforms=self.augs)
                 else: # never use this for now   
                     y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
@@ -393,7 +387,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
     
         if self.aug_prob>0:
             print('Using sound augs!')            
-            self.aug_samples = glob(audio_conf.get('noise_dir'))            
+            self.aug_samples = glob(audio_conf.get('noise_dir'))
+            print('Found {} noise samples for augmentations'.format(self.aug_samples))
             # plain vanilla aug pipeline
             # the probability of harder augs is lower
             # aug probs will be normalized inside of OneOf
@@ -401,7 +396,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 # all augs
                 aug_list = [
                     AddNoise(limit=0.2, # noise is scaled to 0.2 (0.05)
-                             prob=self.aug_prob), 
+                             prob=self.aug_prob,
+                             noise_samples=self.aug_samples), 
                     ChangeAudioSpeed(limit=0.15,
                                      prob=self.aug_prob,
                                      sr=audio_conf.get('sample_rate'),
@@ -436,7 +432,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 # adding noise
                 aug_list = [
                     AddNoise(limit=0.05, # noise is scaled to 0.05
-                             prob=self.aug_prob), 
+                             prob=self.aug_prob,
+                             noise_samples=self.aug_samples), 
                     AudioDistort(limit=0.05, # max clipping 0.05
                                  prob=self.aug_prob), 
                 ]                
@@ -700,21 +697,14 @@ def augment_audio_with_augs(path,
     
     # plug to omit augs 
     if transforms is not None:
-        y_noise, _sample_rate = load_audio_norm(noise_path)
-        if _sample_rate!=sample_rate:
-            y_noise = librosa.resample(y, _sample_rate, sample_rate)    
-        assert len(y_noise.shape)==1         
-        
         _ = transforms(**{'wav':y,
-                          'sr':sample_rate,
-                          'noise':y_noise})
+                          'sr':sample_rate})
         y = _['wav']
     return y, sample_rate    
 
 
 def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.15),
                                   gain_range=(-10, 10), channel=-1,
-                                  noise_path=None,
                                   transforms=None):
     """
     Picks tempo and gain uniformly, applies it to the utterance by using sox utility.
@@ -728,8 +718,7 @@ def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.
         audio, sample_rate_ = augment_audio_with_augs(path=path,
                                                       sample_rate=sample_rate,
                                                       transforms=transforms,
-                                                      channel=channel,
-                                                      noise_path=noise_path)
+                                                      channel=channel)
     else: # never use this for now
         audio, sample_rate_ = augment_audio_with_sox(path=path, sample_rate=sample_rate,
                                                      tempo=tempo_value, gain=gain_value, channel=channel)

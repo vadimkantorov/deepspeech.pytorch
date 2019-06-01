@@ -627,7 +627,7 @@ class LargeCNN(nn.Module):
         # in out kw stride padding dropout
         self.layers = nn.Sequential(
             # whole padding in one place
-            CNNBlock(config.input_channels,200,13,2,170,dropout, bnm), # 1          
+            CNNBlock(config.input_channels,200,13,1,170,dropout, bnm), # 1          
             CNNBlock(200,220,14,1,0, dropout, bnm), # 2
             CNNBlock(220,242,15,1,0, dropout, bnm), # 3
             CNNBlock(242,266,16,1,0, dropout, bnm), # 4

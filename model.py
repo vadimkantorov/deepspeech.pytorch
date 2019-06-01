@@ -627,23 +627,23 @@ class LargeCNN(nn.Module):
         # in out kw stride padding dropout
         self.layers = nn.Sequential(
             # whole padding in one place
-            CNNBlock(config.input_channels,200,13,2,6,dropout, bnm), # 1          
-            CNNBlock(200,220,14,1,7, dropout, bnm), # 2
-            CNNBlock(220,242,15,1,7, dropout, bnm), # 3
-            CNNBlock(242,266,16,1,8, dropout, bnm), # 4
-            CNNBlock(266,292,17,1,8, dropout, bnm), # 5
-            CNNBlock(292,321,18,1,9, dropout, bnm), # 6
-            CNNBlock(321,353,19,1,9, dropout, bnm), # 7
-            CNNBlock(353,388,20,1,10, dropout, bnm), # 8
-            CNNBlock(388,426,21,1,10, dropout, bnm), # 9
-            CNNBlock(426,468,22,1,11, dropout, bnm), # 10
-            CNNBlock(468,514,23,1,11, dropout, bnm), # 11
-            CNNBlock(514,565,24,1,12, dropout, bnm), # 12
-            CNNBlock(565,621,25,1,12, dropout, bnm), # 13
-            CNNBlock(621,683,26,1,13, dropout, bnm), # 14
-            CNNBlock(683,751,27,1,13, dropout, bnm), # 15
-            CNNBlock(751,826,28,1,14, dropout, bnm), # 16
-            CNNBlock(826,826,29,1,14, dropout, bnm), # 17
+            CNNBlock(config.input_channels,200,13,2,170,dropout, bnm), # 1          
+            CNNBlock(200,220,14,1,0, dropout, bnm), # 2
+            CNNBlock(220,242,15,1,0, dropout, bnm), # 3
+            CNNBlock(242,266,16,1,0, dropout, bnm), # 4
+            CNNBlock(266,292,17,1,0, dropout, bnm), # 5
+            CNNBlock(292,321,18,1,0, dropout, bnm), # 6
+            CNNBlock(321,353,19,1,0, dropout, bnm), # 7
+            CNNBlock(353,388,20,1,0, dropout, bnm), # 8
+            CNNBlock(388,426,21,1,0, dropout, bnm), # 9
+            CNNBlock(426,468,22,1,0, dropout, bnm), # 10
+            CNNBlock(468,514,23,1,0, dropout, bnm), # 11
+            CNNBlock(514,565,24,1,0, dropout, bnm), # 12
+            CNNBlock(565,621,25,1,0, dropout, bnm), # 13
+            CNNBlock(621,683,26,1,0, dropout, bnm), # 14
+            CNNBlock(683,751,27,1,0, dropout, bnm), # 15
+            CNNBlock(751,826,28,1,0, dropout, bnm), # 16
+            CNNBlock(826,826,29,1,0, dropout, bnm), # 17
         )
         self.last_channels = 826        
 

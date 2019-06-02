@@ -18,7 +18,9 @@ supported_rnns = {
     'glu_small':None,
     'glu_large':None,
     'glu_flexible':None,
-    'large_cnn':None
+    'large_cnn':None,
+    'cnn_residual':None,
+    'cnn_jasper':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -212,55 +214,45 @@ class DeepSpeech(nn.Module):
             nn.Hardtanh(0, 20, inplace=True),
         ))
 
-        if self._rnn_type == 'cnn':
-            def _block(in_channels, out_channels, kernel_size,
-                       padding=0, stride=1, bnorm=False, bias=True,
-                       dropout=0):
-                # use self._bidirectional flag as a flag for GLU usage in the CNN
-                # the flag is True by default, so use False
-                if not self._bidirectional:
-                    out_channels = int(out_channels * 2)
-
-                res = [nn.Conv1d(in_channels=in_channels, out_channels=out_channels,
-                                 kernel_size=kernel_size, padding=padding,
-                                 stride=stride, bias=bias)]
-                # for non GLU networks
-                if self._bidirectional:
-                    if bnorm:
-                        res.append(nn.BatchNorm1d(out_channels, momentum=bnm))
-                # use self._bidirectional flag as a flag for GLU usage in the CNN                    
-                if self._bidirectional:
-                    res.append(nn.ReLU(inplace=True))
-                else:
-                    res.append(GLUModule(dim=1))
-                # for GLU networks
-                if not self._bidirectional:
-                    if bnorm:
-                        res.append(nn.BatchNorm1d(int(out_channels//2),
-                                                  momentum=bnm))                    
-                if dropout>0:
-                    res.append(nn.Dropout(dropout))
-                return res
-
+        if self._rnn_type == 'cnn': # wav2letter with some features
             size = rnn_hidden_size
-            bnorm = True
-            
-            modules = _block(in_channels=161, out_channels=self._cnn_width, kernel_size=7,
-                             padding=3, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
-            for _ in range(0,self._hidden_layers):
-                modules.extend(
-                    [*_block(in_channels=self._cnn_width, out_channels=self._cnn_width, kernel_size=7,
-                             padding=3, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
-                )
-            modules.extend([*_block(in_channels=self._cnn_width, out_channels=size, kernel_size=31,
-                                    padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
-            modules.extend([*_block(in_channels=size, out_channels=size, kernel_size=1,
-                                    bnorm=bnorm, bias=not bnorm, dropout=dropout)])
-
+            modules = Wav2Letter(
+                DotDict({
+                    'size':size, # here it defines model epilog size
+                    'bnorm':True,
+                    'bnm':self._bnm,
+                    'dropout':dropout,
+                    'cnn_width':self._cnn_width, # cnn filters 
+                    'not_glu':self._bidirectional, # glu or basic relu
+                    'repeat_layers':self._hidden_layers, # depth, only middle part
+                    'kernel_size':7
+                })                
+            )
             self.rnns = nn.Sequential(*modules)
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
+        elif self._rnn_type == 'cnn_residual': # wav2letter with some features
+            size = rnn_hidden_size
+            self.rnns = ResidualWav2Letter(
+                DotDict({
+                    'size':rnn_hidden_size, # here it defines model epilog size
+                    'bnorm':True,
+                    'bnm':self._bnm,
+                    'dropout':dropout,
+                    'cnn_width':self._cnn_width, # cnn filters 
+                    'not_glu':self._bidirectional, # glu or basic relu
+                    'repeat_layers':self._hidden_layers, # depth, only middle part
+                    'kernel_size':7,
+                    'se_ratio':0.25,
+                    'skip':True
+                })                
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )     
+        elif self._rnn_type == 'cnn_jasper': # http://arxiv.org/abs/1904.03288
+            raise NotImplementedError()
         elif self._rnn_type == 'large_cnn':
             self.rnns = LargeCNN(
                 DotDict({
@@ -273,7 +265,7 @@ class DeepSpeech(nn.Module):
             size = self.rnns.last_channels            
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
-            )
+            )            
         elif self._rnn_type == 'glu_small':
             self.rnns = SmallGLU(
                 DotDict({
@@ -299,7 +291,7 @@ class DeepSpeech(nn.Module):
             )
         elif self._rnn_type == 'glu_flexible':
             raise NotImplementedError("Customizable GLU not yet implemented") 
-        else:
+        else: # original ds2
             # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
             rnn_input_size = int(math.floor((sample_rate * window_size + 1e-2) / 2) + 1)
             rnn_input_size = int(math.floor(rnn_input_size + 2 * 20 - 41 + 1e-2) / 2 + 1)
@@ -336,7 +328,8 @@ class DeepSpeech(nn.Module):
         lengths = lengths.cpu().int()
         output_lengths = self.get_seq_lens(lengths).cuda()
 
-        if self._rnn_type in ['cnn','glu_small','glu_large','large_cnn']:
+        if self._rnn_type in ['cnn','glu_small','glu_large','large_cnn',
+                              'cnn_residual']:
             x = x.squeeze(1)
             x = self.rnns(x)
             x = self.fc(x)
@@ -492,6 +485,111 @@ class DeepSpeech(nn.Module):
                isinstance(model, torch.nn.parallel.DistributedDataParallel)
 
 
+# bit ugly, but we need to clean things up!
+def Wav2Letter(config):
+    assert type(config)==DotDict
+    not_glu = config.not_glu
+    bnm = config.bnm
+    def _block(in_channels, out_channels, kernel_size,
+               padding=0, stride=1, bnorm=False, bias=True,
+               dropout=0):
+        # use self._bidirectional flag as a flag for GLU usage in the CNN
+        # the flag is True by default, so use False
+        if not not_glu:
+            out_channels = int(out_channels * 2)
+
+        res = [nn.Conv1d(in_channels=in_channels, out_channels=out_channels,
+                         kernel_size=kernel_size, padding=padding,
+                         stride=stride, bias=bias)]
+        # for non GLU networks
+        if not_glu:
+            if bnorm:
+                res.append(nn.BatchNorm1d(out_channels, momentum=bnm))
+        # use self._bidirectional flag as a flag for GLU usage in the CNN                    
+        if not_glu:
+            res.append(nn.ReLU(inplace=True))
+        else:
+            res.append(GLUModule(dim=1))
+        # for GLU networks
+        if not not_glu:
+            if bnorm:
+                res.append(nn.BatchNorm1d(int(out_channels//2),
+                                          momentum=bnm))                    
+        if dropout>0:
+            res.append(nn.Dropout(dropout))
+        return res
+
+    size = config.size
+    cnn_width = config.cnn_width
+    bnorm = config.bnorm
+    dropout = config.dropout
+    repeat_layers = config.repeat_layers
+    kernel_size = config.kernel_size # wav2letter default - 7
+    padding = kernel_size // 2
+
+    # "prolog"
+    modules = _block(in_channels=161, out_channels=cnn_width, kernel_size=kernel_size,
+                     padding=padding, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
+    
+    # main convs
+    for _ in range(0,repeat_layers):
+        modules.extend(
+            [*_block(in_channels=cnn_width, out_channels=cnn_width, kernel_size=kernel_size,
+                     padding=padding, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
+        )
+    # "epilog"
+    modules.extend([*_block(in_channels=cnn_width, out_channels=size, kernel_size=31,
+                            padding=15, bnorm=bnorm, bias=not bnorm, dropout=dropout)])
+    modules.extend([*_block(in_channels=size, out_channels=size, kernel_size=1,
+                            bnorm=bnorm, bias=not bnorm, dropout=dropout)])
+    return modules
+
+
+class ResidualWav2Letter(nn.Module):
+    def __init__(self,config):
+        super(ResidualWav2Letter, self).__init__()
+        
+        size = config.size
+        cnn_width = config.cnn_width
+        bnorm = config.bnorm
+        bnm = config.bnm
+        dropout = config.dropout
+        repeat_layers = config.repeat_layers
+        kernel_size = config.kernel_size # wav2letter default - 7
+        padding = kernel_size // 2
+        se_ratio = config.se_ratio
+        skip = config.skip
+        
+        # "prolog"
+        modules = [ResCNNBlock(_in=161, out=cnn_width, kernel_size=kernel_size,
+                               padding=padding, stride=2,bnm=bnm, bias=not bnorm, dropout=dropout,
+                               nonlinearity=nn.ReLU(inplace=True),
+                               se_ratio=0,skip=False)] # no skips and attention
+        
+        # main convs
+        for _ in range(0,repeat_layers):
+            modules.extend(
+                [ResCNNBlock(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
+                               padding=padding, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                               nonlinearity=nn.ReLU(inplace=True),
+                               se_ratio=se_ratio,skip=skip)]
+            )
+        # "epilog"
+        modules.extend([ResCNNBlock(_in=cnn_width, out=size, kernel_size=31,
+                                    padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                                    nonlinearity=nn.ReLU(inplace=True),
+                                    se_ratio=0,skip=False)]) # no skips and attention
+        modules.extend([ResCNNBlock(_in=size, out=size, kernel_size=1,
+                                    padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                                    nonlinearity=nn.ReLU(inplace=True),
+                                    se_ratio=0,skip=False)]) # no skips and attention
+        
+        self.layers = nn.Sequential(*modules)
+
+    def forward(self, x):
+        return self.layers(x)  
+
+
 class GLUBlock(nn.Module):
     def __init__(self,
                  _in=1,
@@ -553,7 +651,59 @@ class CNNBlock(nn.Module):
         x = self.norm(x)
         x = self.nonlinearity(x)
         x = self.dropout(x)
-        return x    
+        return x
+
+
+class ResCNNBlock(nn.Module):
+    def __init__(self,
+                 _in=1,
+                 out=400,
+                 kernel_size=13,
+                 stride=1,
+                 padding=0,
+                 dropout=0.1,
+                 bnm=0.1,
+                 nonlinearity=nn.ReLU(inplace=True),
+                 bias=True,
+                 se_ratio=0,
+                 skip=False
+                 ):
+        super(ResCNNBlock, self).__init__()       
+        
+        self.conv = nn.Conv1d(_in,
+                              out,
+                              kernel_size,
+                              stride=stride,
+                              padding=padding,
+                              bias=bias)
+        self.norm = nn.BatchNorm1d(out,
+                                   momentum=bnm)
+        self.nonlinearity = nonlinearity
+        self.dropout = nn.Dropout(dropout)
+        self.se_ratio = se_ratio
+        self.skip = skip        
+        self.has_se = (self.se_ratio is not None) and (0 < self.se_ratio <= 1)
+        # Squeeze and Excitation layer, if required
+        if self.has_se:
+            num_squeezed_channels = max(1, int(_in * self.se_ratio))
+            self._se_reduce = Conv1dSamePadding(in_channels=out, out_channels=num_squeezed_channels, kernel_size=1)
+            self._se_expand = Conv1dSamePadding(in_channels=num_squeezed_channels, out_channels=out, kernel_size=1)        
+        
+    def forward(self, x):
+        # be a bit more memory efficient during ablations
+        if self.skip:
+            inputs = x
+        x = self.conv(x)
+        x = self.norm(x)
+        x = self.nonlinearity(x)
+        x = self.dropout(x)
+        if self.has_se:
+            x_squeezed = F.adaptive_avg_pool1d(x, 1) # channel dimension
+            x_squeezed = self._se_expand(relu_fn(self._se_reduce(x_squeezed)))
+            x = torch.sigmoid(x_squeezed) * x                
+        if self.skip:
+            x = x + inputs
+        return x       
 
 
 class SmallGLU(nn.Module):
@@ -678,6 +828,46 @@ class GLUModule(nn.Module):
 
     def forward(self, x):
         return glu(x,dim=self.dim)           
+
+
+def relu_fn(x):
+    """ Swish activation function """
+    return x * torch.sigmoid(x)
+
+
+class Conv1dSamePadding(nn.Conv1d):
+    """ 2D Convolutions like TensorFlow """
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, groups=1, bias=True):
+        super().__init__(in_channels, out_channels, kernel_size, stride, 0, dilation, groups, bias)
+        self.stride = self.stride[0] # just a scalar
+
+    def forward(self, x):
+        iw = int(x.size()[-1])
+        kw = int(self.weight.size()[-1])
+        sw = self.stride
+        ow = math.ceil(iw / sw)
+        pad_w = max((ow - 1) * self.stride + (kw - 1) * self.dilation[0] + 1 - iw, 0)
+        if pad_w > 0:
+            x = F.pad(x, [pad_w//2, pad_w - pad_w//2])
+        return F.conv1d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+
+
+class Conv2dSamePadding(nn.Conv2d):
+    """ 2D Convolutions like TensorFlow """
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, groups=1, bias=True):
+        super().__init__(in_channels, out_channels, kernel_size, stride, 0, dilation, groups, bias)
+        self.stride = self.stride if len(self.stride) == 2 else [self.stride[0]]*2
+
+    def forward(self, x):
+        ih, iw = x.size()[-2:]
+        kh, kw = self.weight.size()[-2:]
+        sh, sw = self.stride
+        oh, ow = math.ceil(ih / sh), math.ceil(iw / sw)
+        pad_h = max((oh - 1) * self.stride[0] + (kh - 1) * self.dilation[0] + 1 - ih, 0)
+        pad_w = max((ow - 1) * self.stride[1] + (kw - 1) * self.dilation[1] + 1 - iw, 0)
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, [pad_w//2, pad_w - pad_w//2, pad_h//2, pad_h - pad_h//2])
+        return F.conv2d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
 
 def main():

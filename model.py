@@ -888,7 +888,7 @@ class JasperEpilog(nn.Module):
                 skip=False
             ),
             JasperCNNBlock(
-                in_channels=896
+                in_channels=896,
                 out_channels=1024,
                 kernel_size=1,
                 stride=1,

@@ -2,11 +2,11 @@ import os
 import gc
 import json
 import time
-import tqdm
+#import tqdm
 import argparse
 import datetime
 
-from enorm.enorm import ENorm
+#from enorm.enorm import ENorm
 import torch.distributed as dist
 import torch.utils.data.distributed
 from warpctc_pytorch import CTCLoss
@@ -14,13 +14,13 @@ from warpctc_pytorch import CTCLoss
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
 from data.utils import reduce_tensor, get_cer_wer
-from data.data_loader_aug import (AudioDataLoader,
-                                  SpectrogramDataset,
-                                  BucketingSampler,
-                                  DistributedBucketingSampler)
+#from data.data_loader_aug import (AudioDataLoader,
+#                                  SpectrogramDataset,
+#                                  BucketingSampler,
+#                                  DistributedBucketingSampler)
 
 
-tq = tqdm.tqdm
+#tq = tqdm.tqdm
 
 VISIBLE_DEVICES = os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',') or ['0']
 
@@ -334,7 +334,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     num_chars, num_words, num_losses = 0, 0, 0
     model.eval()
     with torch.no_grad():
-        for i, data in tq(enumerate(test_loader), total=len(test_loader)):
+        for i, data in enumerate(test_loader):#tq(enumerate(test_loader), total=len(test_loader)):
             inputs, targets, filenames, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
@@ -439,7 +439,7 @@ def calculate_trainval_quality_metrics(checkpoint,
     num_chars, num_words, num_losses = 0, 0, 0
     model.eval()    
     with torch.no_grad():
-        for i, data in tq(enumerate(loader), total=len(loader)):
+        for i, data in enumerate(loader):#tq(enumerate(loader), total=len(loader)):
             inputs, targets, filenames, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
@@ -788,6 +788,13 @@ def train(from_epoch, from_iter, from_checkpoint):
 
 
 if __name__ == '__main__':
+	torch.multiprocessing.set_start_method('spawn', force = True)
+    from data.data_loader_aug import (AudioDataLoader,
+                                  SpectrogramDataset,
+                                  BucketingSampler,
+                                  DistributedBucketingSampler)
+    torch.multiprocessing.set_start_method('spawn', force = True)
+
     args = parser.parse_args()
     args.distributed = args.world_size > 1
     args.model_path = os.path.join(args.save_folder, 'best.model')

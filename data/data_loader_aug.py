@@ -42,6 +42,7 @@ from data.spectrogram_aug import (SCompose,
                                   FrequencyMask,
                                   TimeMask)
 from data.audio_loader import load_audio_norm
+from data.audio_loader import load_audio
 from scipy.io import wavfile
 
 tq = tqdm.tqdm
@@ -52,19 +53,6 @@ windows = {'hamming': scipy.signal.hamming,
            'hann': scipy.signal.hann,
            'blackman': scipy.signal.blackman,
            'bartlett': scipy.signal.bartlett}
-
-def load_audio(path, channel=-1):
-    sound, sample_rate = torchaudio.load(path, normalization=False)
-    sound = sound.numpy().T
-    if len(sound.shape) > 1:
-        if sound.shape[1] == 1:
-            sound = sound.squeeze()
-        elif channel == -1:
-            sound = sound.mean(axis=1)  # multiple channels, average
-        else:
-            sound = sound[:, channel]  # multiple channels, average
-    return sound, sample_rate
-
 
 class AudioParser(object):
     def parse_transcript(self, transcript_path):
